@@ -52,9 +52,9 @@ probe. Configuration, API key, endpoint or official account changes invalidate
 the corresponding evidence. Cache entries contain configuration/account hashes,
 model names and status metadata, not tokens, keys, response bodies or history.
 
-## Development status
+## Release
 
-Implemented after the backend-only `krill-v4.0.26-1` release on a separate branch.
-The already published executable does not include these badges. This UI change
-has static type/lint checks and a renderer build; no GUI or live protocol test
-was run for this change.
+Included in `4.0.26-krill.2`, following the backend-only `krill-v4.0.26-1`
+release. The badge implementation passed static type/lint checks and a renderer
+build. Earlier backend test results do not establish live behavior of the new
+capability probes; no new live model acceptance run is claimed for this release.

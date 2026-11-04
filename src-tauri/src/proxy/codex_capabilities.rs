@@ -506,7 +506,7 @@ async fn probe(
     headers.insert("accept", HeaderValue::from_static("text/event-stream"));
     headers.insert("accept-encoding", HeaderValue::from_static("identity"));
     let started = std::time::Instant::now();
-    let request = json!({"model":model,"store":false,"stream":true,"reasoning":{"effort":"low"},"tools":[],"input":[{"role":"user","content":"Capability check: remember CCS-CMP."},{"type":"compaction_trigger"}]});
+    let request = json!({"model":model,"instructions":"Preserve the supplied marker in a concise native compaction.","store":false,"stream":true,"reasoning":{"effort":"low"},"tools":[],"input":[{"role":"user","content":"Capability check: remember CCS-CMP."},{"type":"compaction_trigger"}]});
     let response = super::http_client::no_redirect()
         .map_err(|_| None)?
         .post(url)

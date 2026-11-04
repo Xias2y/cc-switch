@@ -1,0 +1,19 @@
+{
+  "version": "4.0.26-krill.2",
+  "items": [
+    {
+      "type": "new",
+      "zh": "聚合供应商旁显示 WS / CMP 可用性，沿用原版标签样式",
+      "zh-TW": "聚合供應商旁顯示 WS / CMP 可用性，沿用原版標籤樣式",
+      "en": "WS / CMP availability appears beside aggregation providers using the original chip style",
+      "ja": "集約プロバイダーに従来のラベルで WS / CMP の利用状況を表示"
+    },
+    {
+      "type": "improve",
+      "zh": "按模型使用低频检测，绿色表示已确认，灰色可查看原因",
+      "zh-TW": "按模型使用低頻檢測，綠色表示已確認，灰色可查看原因",
+      "en": "Checks follow model use: green is verified; hover over gray badges for the reason",
+      "ja": "モデル使用時に低頻度で確認。緑は確認済み、灰色は理由を表示"
+    }
+  ]
+}
