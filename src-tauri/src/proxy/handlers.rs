@@ -1121,6 +1121,8 @@ async fn handle_responses_for_app(
     let namespace_restore_map = transform_codex_responses_namespace::namespace_restore_map(&body);
 
     let forwarder = ctx.create_forwarder(&state);
+    let capability_headers = matches!(app_type, AppType::Codex).then(|| headers.clone());
+    let capability_model = body["model"].as_str().unwrap_or_default().to_owned();
     let mut result = match forwarder
         .forward_with_retry(
             &app_type,
@@ -1138,6 +1140,16 @@ async fn handle_responses_for_app(
             if let Some(provider) = err.provider.take() {
                 ctx.provider = provider;
             }
+            if let Some(headers) = &capability_headers {
+                super::codex_capabilities::failed(
+                    &state,
+                    &ctx.provider,
+                    headers,
+                    &capability_model,
+                    compaction_request,
+                    &err.error,
+                );
+            }
             log_forward_error(&state, &ctx, is_stream, &err.error).await;
             return build_codex_proxy_error_response(&ctx, &endpoint, &err.error, is_stream);
         }
@@ -1148,6 +1160,15 @@ async fn handle_responses_for_app(
     ctx.outbound_model = result.outbound_model.take();
     ctx.provider = result.provider;
     let response = result.response;
+
+    if let Some(headers) = capability_headers {
+        super::codex_capabilities::on_use(
+            &state,
+            &ctx.provider,
+            &headers,
+            ctx.outbound_model.as_deref().unwrap_or(&ctx.request_model),
+        );
+    }
 
     if codex_upstream_format == Some(CodexUpstreamFormat::Anthropic) {
         return handle_codex_anthropic_to_responses_transform(

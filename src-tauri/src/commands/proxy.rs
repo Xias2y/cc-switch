@@ -227,6 +227,20 @@ pub async fn get_proxy_status(state: tauri::State<'_, AppState>) -> Result<Proxy
     state.proxy_service.get_status().await
 }
 
+#[tauri::command]
+pub fn get_codex_capabilities(
+    state: tauri::State<'_, AppState>,
+) -> Result<std::collections::HashMap<String, crate::proxy::codex_capabilities::Capabilities>, String>
+{
+    let providers = state
+        .db
+        .get_all_providers("codex")
+        .map_err(|error| error.to_string())?;
+    Ok(crate::proxy::codex_capabilities::snapshot(
+        providers.values(),
+    ))
+}
+
 /// 获取代理配置
 #[tauri::command]
 pub async fn get_proxy_config(state: tauri::State<'_, AppState>) -> Result<ProxyConfig, String> {

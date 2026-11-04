@@ -1,7 +1,7 @@
 import type { TFunction } from "i18next";
 import type { Provider } from "@/types";
 import type { AppId } from "@/lib/api";
-import type { AppMode } from "@/types/proxy";
+import type { AppMode, CodexCapabilities } from "@/types/proxy";
 import { isPiFamilyApp } from "@/config/appConfig";
 import {
   isOfficialAccount,
@@ -30,6 +30,7 @@ export interface CardChip {
   label: string;
   tone: ChipTone;
   title?: string;
+  available?: boolean;
 }
 
 export interface CardMenuOption {
@@ -143,6 +144,7 @@ export interface SwitchModeInput {
   /** 需要路由的原因（悬停「需要路由」时的说明） */
   routingReason: (provider: Provider) => string;
   serviceRunning: boolean;
+  codexCapabilities?: Record<string, CodexCapabilities>;
   actions: {
     switchDirect: (provider: Provider) => void;
     needsRouteDialog: (provider: Provider) => void;
@@ -175,17 +177,53 @@ export function buildSwitchSections(input: SwitchModeInput): ProviderSection[] {
     ...section,
     items: section.items.map((item) => {
       const reason = deleteBlockedReason(item.provider.id);
-      return reason
-        ? {
-            ...item,
-            presentation: {
-              ...item.presentation,
-              deleteDisabledReason: reason,
-            },
-          }
-        : item;
+      return {
+        ...item,
+        presentation: {
+          ...item.presentation,
+          ...(reason ? { deleteDisabledReason: reason } : {}),
+          chips: [
+            ...item.presentation.chips,
+            ...(input.app === "codex" && input.view === "stack"
+              ? codexCapabilityChips(
+                  input.codexCapabilities?.[item.provider.id],
+                )
+              : []),
+          ],
+        },
+      };
     }),
   }));
+}
+
+function codexCapabilityChips(evidence?: CodexCapabilities): CardChip[] {
+  return (
+    [
+      ["ws", "WS", "WebSocket"],
+      ["cmp", "CMP", "Native context compaction"],
+    ] as const
+  ).map(([key, label, name]) => {
+    const item = evidence?.[key];
+    const status =
+      key === "cmp" && evidence?.checkingCmp
+        ? "Checking"
+        : item?.available
+          ? "Available"
+          : item
+            ? "Unavailable"
+            : "Not verified recently";
+    const checked = item
+      ? ` Checked: ${new Date(item.checkedAt * 1000).toLocaleString()}.`
+      : "";
+    const model = evidence?.model ? ` Model: ${evidence.model}.` : "";
+    return {
+      key: `codex-${key}`,
+      label,
+      tone: "outline",
+      available: Boolean(item?.available),
+      title: `${name}: ${status}.${model}${checked} ${item?.detail ?? "Checked when this model is used. Gray also means unknown or expired."}`,
+    };
+  });
 }
 
 function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {

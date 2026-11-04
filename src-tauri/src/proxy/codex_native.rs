@@ -28,7 +28,7 @@ const OWNER_TTL: i64 = 90 * 24 * 60 * 60;
 const MAX_OWNERS: usize = 20_000;
 const ZSTD_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
-fn krill(provider: &Provider) -> bool {
+pub(super) fn krill(provider: &Provider) -> bool {
     CodexAdapter::new()
         .extract_base_url(provider)
         .ok()
@@ -203,6 +203,7 @@ pub(super) fn observe(provider: &Provider, headers: &HeaderMap, request: &Value,
     {
         return;
     }
+    super::codex_capabilities::completed(provider, headers, request, response);
     let fingerprints: Vec<_> = compactions(response, "output")
         .into_iter()
         .chain(compactions(request, "input"))
@@ -292,7 +293,7 @@ pub(super) async fn observe_http(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let request = json!({"input":input});
+    let request = json!({"model":request["model"],"input":input});
     let stream = response.bytes_stream();
     let stream = async_stream::stream! {
         tokio::pin!(stream);

@@ -96,6 +96,8 @@ export function CardChipBadge({ chip }: { chip: CardChip }) {
       className={cn(
         "inline-flex h-[18px] shrink-0 items-center whitespace-nowrap rounded-full px-1.5 text-badge",
         CHIP_CLASS[chip.tone],
+        chip.available === true && "text-success-text",
+        chip.available === false && "text-fg-3",
         chip.title && "cursor-help",
       )}
     >

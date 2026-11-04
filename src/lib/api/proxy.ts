@@ -11,6 +11,7 @@ import type {
   CodexDaemonRestartOutcome,
   AppModeView,
   StartupAttachFailure,
+  CodexCapabilities,
 } from "@/types/proxy";
 
 export const proxyApi = {
@@ -34,6 +35,10 @@ export const proxyApi = {
   // 获取代理服务器状态
   async getProxyStatus(): Promise<ProxyStatus> {
     return invoke("get_proxy_status");
+  },
+
+  async getCodexCapabilities(): Promise<Record<string, CodexCapabilities>> {
+    return invoke("get_codex_capabilities");
   },
 
   // ========== 接管状态 API ==========

@@ -253,3 +253,17 @@ export interface AppProxyConfig {
   circuitErrorRateThreshold: number;
   circuitMinRequests: number;
 }
+
+export interface CodexCapabilityEvidence {
+  available: boolean;
+  checkedAt: number;
+  lastSuccessAt: number | null;
+  detail: string;
+}
+
+export interface CodexCapabilities {
+  model: string;
+  ws: CodexCapabilityEvidence | null;
+  cmp: CodexCapabilityEvidence | null;
+  checkingCmp: boolean;
+}

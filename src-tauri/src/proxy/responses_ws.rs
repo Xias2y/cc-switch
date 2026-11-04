@@ -71,6 +71,10 @@ impl Default for ResponsesWsState {
 }
 
 impl ResponsesWsState {
+    pub(super) fn subscribe(&self) -> watch::Receiver<u64> {
+        self.shutdown.subscribe()
+    }
+
     pub(super) fn shutdown(&self) {
         self.shutdown
             .send_modify(|generation| *generation = generation.wrapping_add(1));
@@ -285,7 +289,7 @@ async fn select_turn(
     })
 }
 
-fn bearer(headers: &HeaderMap) -> Option<&str> {
+pub(super) fn bearer(headers: &HeaderMap) -> Option<&str> {
     let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let (scheme, token) = value.split_once(' ')?;
     (scheme.eq_ignore_ascii_case("bearer") && !token.trim().is_empty()).then_some(token.trim())
@@ -300,7 +304,7 @@ fn needs_http(provider: &Provider) -> bool {
         || providers::provider_needs_responses_namespace_flatten(provider)
 }
 
-fn upstream_headers(
+pub(super) fn upstream_headers(
     source: &HeaderMap,
     provider: &Provider,
     official: bool,
@@ -405,7 +409,7 @@ fn upstream_headers(
     Ok(headers)
 }
 
-fn upstream_url(provider: &Provider, uri: &Uri) -> Result<String, ProxyError> {
+pub(super) fn upstream_url(provider: &Provider, uri: &Uri) -> Result<String, ProxyError> {
     let adapter = CodexAdapter::new();
     let base = adapter.extract_base_url(provider)?;
     let full = provider.meta.as_ref().and_then(|meta| meta.is_full_url) == Some(true)
@@ -476,6 +480,14 @@ async fn connect(
                         error.is_timeout(),
                         error.without_url()
                     );
+                    super::codex_capabilities::ws(
+                        state,
+                        &turn.ctx.provider,
+                        &headers,
+                        turn.frame["model"].as_str().unwrap_or_default(),
+                        false,
+                        false,
+                    );
                     return Ok(Connected::Http);
                 }
             }
@@ -485,9 +497,25 @@ async fn connect(
         response.status().as_u16(),
         404 | 405 | 426 | 501 | 502 | 503 | 504
     ) {
+        super::codex_capabilities::ws(
+            state,
+            &turn.ctx.provider,
+            &headers,
+            turn.frame["model"].as_str().unwrap_or_default(),
+            false,
+            matches!(response.status().as_u16(), 404 | 405 | 426 | 501),
+        );
         return Ok(Connected::Http);
     }
     if response.status() != StatusCode::SWITCHING_PROTOCOLS {
+        super::codex_capabilities::ws(
+            state,
+            &turn.ctx.provider,
+            &headers,
+            turn.frame["model"].as_str().unwrap_or_default(),
+            false,
+            matches!(response.status().as_u16(), 401 | 403),
+        );
         return Err(ProxyError::UpstreamError {
             status: response.status().as_u16(),
             body: Some(
@@ -515,6 +543,14 @@ async fn connect(
         .upgrade()
         .await
         .map_err(|_| ProxyError::ForwardFailed("Upstream upgrade failed".into()))?;
+    super::codex_capabilities::ws(
+        state,
+        &turn.ctx.provider,
+        &headers,
+        turn.frame["model"].as_str().unwrap_or_default(),
+        true,
+        true,
+    );
     let config = WebSocketConfig {
         max_message_size: Some(MAX_MESSAGE),
         max_frame_size: Some(MAX_MESSAGE),
@@ -633,6 +669,14 @@ impl Pending {
             });
         }
         if status == 200 && !self.turn.prewarm {
+            super::codex_capabilities::ws(
+                state,
+                &self.turn.ctx.provider,
+                headers,
+                self.turn.frame["model"].as_str().unwrap_or_default(),
+                true,
+                true,
+            );
             if let Some(response) = event.and_then(|event| event.get("response")) {
                 super::codex_native::observe(
                     &self.turn.ctx.provider,
@@ -802,6 +846,7 @@ async fn session(
                     request.finish(&state, &headers, None, 502);
                     break;
                 }
+                super::codex_capabilities::on_use(&state, &request.turn.ctx.provider, &headers, request.turn.frame["model"].as_str().unwrap_or_default());
                 pending.push_back(request);
             }
             message = async { upstream.as_mut().expect("connected upstream").next().await }, if upstream.is_some() => {
@@ -827,6 +872,7 @@ async fn session(
                         if matches!(status, Some(400..=599)) {
                             if let Some(head) = pending_index.and_then(|index| pending.get(index)) {
                                 let error = ProxyError::UpstreamError { status: status.unwrap_or(502), body: Some(event.to_string()) };
+                                super::codex_capabilities::failed(&state, &head.turn.ctx.provider, &headers, head.turn.frame["model"].as_str().unwrap_or_default(), codex_compaction::is_compaction_request(&head.turn.frame), &error);
                                 if head.first_token_ms.is_none()
                                     && super::opaque_state_rectifier::detect_opaque_state_rejection(
                                         &error, &head.turn.ctx.rectifier_config, &head.turn.frame, !head.turn.official
@@ -867,7 +913,12 @@ async fn session(
                         if down.send(Message::Binary(bytes)).await.is_err() { break; }
                     }
                     Some(Ok(UpMessage::Frame(_))) => {}
-                    Some(Err(_)) | None => break,
+                    Some(Err(_)) | None => {
+                        if let Some(head) = pending.front() {
+                            super::codex_capabilities::ws(&state, &head.turn.ctx.provider, &headers, head.turn.frame["model"].as_str().unwrap_or_default(), false, false);
+                        }
+                        break;
+                    }
                 }
             }
         }

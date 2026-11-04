@@ -38,6 +38,7 @@ import {
 } from "@/hooks/useHermes";
 import { useStreamCheck } from "@/hooks/useStreamCheck";
 import { ProviderCard } from "@/components/providers/ProviderCard";
+import { useCodexCapabilities } from "@/lib/query/codexCapabilities";
 import { ProviderEmptyState } from "@/components/providers/ProviderEmptyState";
 import {
   useCurrentOmoProviderId,
@@ -128,6 +129,12 @@ export function ProviderList({
   searchSlot,
 }: ProviderListProps) {
   const { t } = useTranslation();
+  const capabilityQuery = useCodexCapabilities(
+    appId === "codex" && switchMode?.view === "stack",
+  );
+  const codexCapabilities = capabilityQuery.isError
+    ? undefined
+    : capabilityQuery.data;
   const { checkProvider, isChecking } = useStreamCheck(appId);
   const { sortedProviders, sensors, handleDragEnd } = useDragSort(
     providers,
@@ -361,6 +368,7 @@ export function ProviderList({
         t,
         providers: filteredProviders,
         queue: switchMode.queue.filter((id) => known.has(id)),
+        codexCapabilities,
       });
     }
     if (appId === "agy") {
@@ -426,6 +434,7 @@ export function ProviderList({
     });
   }, [
     switchMode,
+    codexCapabilities,
     appId,
     t,
     sortedProviders,

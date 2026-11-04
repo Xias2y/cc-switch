@@ -1802,6 +1802,7 @@ pub fn run() {
             commands::exit_proxy_apps_in_mode,
             commands::get_direct_provider,
             commands::get_proxy_status,
+            commands::get_codex_capabilities,
             commands::get_proxy_config,
             commands::update_proxy_config,
             // Global & Per-App Config
