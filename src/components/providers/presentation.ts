@@ -204,14 +204,11 @@ function codexCapabilityChips(evidence?: CodexCapabilities): CardChip[] {
     ] as const
   ).map(([key, label, name]) => {
     const item = evidence?.[key];
-    const status =
-      key === "cmp" && evidence?.checkingCmp
-        ? "Checking"
-        : item?.available
-          ? "Available"
-          : item
-            ? "Unavailable"
-            : "Not verified recently";
+    const status = item?.available
+      ? "Available"
+      : item
+        ? "Unavailable"
+        : "Not verified recently";
     const checked = item
       ? ` Checked: ${new Date(item.checkedAt * 1000).toLocaleString()}.`
       : "";
@@ -221,7 +218,7 @@ function codexCapabilityChips(evidence?: CodexCapabilities): CardChip[] {
       label,
       tone: "outline",
       available: Boolean(item?.available),
-      title: `${name}: ${status}.${model}${checked} ${item?.detail ?? "Checked when this model is used. Gray also means unknown or expired."}`,
+      title: `${name}: ${status}.${model}${checked} ${item?.detail ?? "Observed from normal requests only. Gray also means unknown or expired."}`,
     };
   });
 }

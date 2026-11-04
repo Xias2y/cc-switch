@@ -1,15 +1,14 @@
 //! Recent, device-local capability evidence for the existing provider chips.
-//! A separate synthetic compaction probe runs only on model use and at most
-//! once a day after success. UI reads never cause upstream requests.
+//! Evidence comes only from normal routed traffic. Neither model use nor UI
+//! reads send additional requests for capability detection.
 
 use std::{
     collections::HashMap,
     path::PathBuf,
     sync::{Mutex, OnceLock},
-    time::Duration,
 };
 
-use http::{HeaderMap, HeaderValue};
+use http::HeaderMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::Emitter;
@@ -44,7 +43,6 @@ pub struct Capabilities {
     pub model: String,
     pub ws: Option<Evidence>,
     pub cmp: Option<Evidence>,
-    pub checking_cmp: bool,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -54,7 +52,6 @@ struct Entry {
     account: String,
     at: i64,
     used_at: i64,
-    probe_at: i64,
     capabilities: Capabilities,
 }
 
@@ -78,9 +75,6 @@ impl Cache {
                 .ok()
                 .and_then(|bytes| serde_json::from_slice(&bytes).ok())
                 .unwrap_or_default();
-            for entry in self.records.values_mut() {
-                entry.capabilities.checking_cmp = false;
-            }
             self.path = path;
         }
         let now = chrono::Utc::now().timestamp();
@@ -368,8 +362,8 @@ pub(super) fn failed(
     }
 }
 
-/// Called on actual model use, never by the UI polling command. This does not
-/// mutate the user's conversation and does not retry a generated probe.
+/// Record the selected model and local configuration only. Availability is
+/// observed from the user's normal requests; no additional request is sent.
 pub(super) fn on_use(state: &ProxyState, provider: &Provider, headers: &HeaderMap, model: &str) {
     if !model.starts_with("gpt-")
         || !crate::mode::stack::stack_mode_now(&crate::app_config::AppType::Codex)
@@ -381,8 +375,8 @@ pub(super) fn on_use(state: &ProxyState, provider: &Provider, headers: &HeaderMa
         cache.load();
         entry(&mut cache, provider, headers, model).used_at = chrono::Utc::now().timestamp_millis();
     }
-    if !codex_native::native_compaction(provider, model) {
-        if update(
+    if !codex_native::native_compaction(provider, model)
+        && update(
             provider,
             headers,
             model,
@@ -390,190 +384,8 @@ pub(super) fn on_use(state: &ProxyState, provider: &Provider, headers: &HeaderMa
             false,
             true,
             "Native compaction is disabled or this route uses a summary bridge",
-        ) {
-            notify(state);
-        }
-        return;
-    }
-    // Automatic paid checks are restricted to the official/Krill feature scope;
-    // other providers keep their existing behavior and use passive evidence.
-    if !providers::is_codex_official_provider(provider) && !codex_native::krill(provider) {
-        return;
-    }
-    let now = chrono::Utc::now().timestamp();
-    {
-        let mut cache = cache().lock().expect("capability cache");
-        cache.load();
-        let record = entry(&mut cache, provider, headers, model);
-        if record.capabilities.checking_cmp
-            || record.capabilities.cmp.as_ref().is_some_and(|e| {
-                (e.available || e.definitive)
-                    && now.saturating_sub(if e.available {
-                        e.last_success_at.unwrap_or(e.checked_at)
-                    } else {
-                        e.checked_at
-                    }) < DAY
-            })
-            || now.saturating_sub(record.probe_at) < RETRY
-        {
-            return;
-        }
-        record.probe_at = now;
-        record.capabilities.checking_cmp = true;
-        cache.save(true);
-    }
-    notify(state);
-    let (state, provider, headers, model) = (
-        state.clone(),
-        provider.clone(),
-        headers.clone(),
-        model.to_owned(),
-    );
-    let mut shutdown = state.responses_ws.subscribe();
-    tokio::spawn(async move {
-        let result = tokio::select! {
-            _ = shutdown.changed() => None,
-            result = tokio::time::timeout(Duration::from_secs(180), probe(&state, &provider, &headers, &model)) => Some(result),
-        };
-        let (available, definite, detail) = match result {
-            Some(Ok(Ok(()))) => (
-                true,
-                true,
-                "Native compaction verified by a small isolated probe",
-            ),
-            Some(Ok(Err(Some(detail)))) => (false, true, detail),
-            _ => (
-                false,
-                false,
-                "Compaction check could not finish; retry on model use after 15 minutes",
-            ),
-        };
-        if result.is_some() {
-            update(
-                &provider, &headers, &model, false, available, definite, detail,
-            );
-        }
-        {
-            let mut cache = cache().lock().expect("capability cache");
-            cache.load();
-            entry(&mut cache, &provider, &headers, &model)
-                .capabilities
-                .checking_cmp = false;
-            cache.save(true);
-        }
-        notify(&state);
-    });
-}
-
-async fn probe(
-    state: &ProxyState,
-    provider: &Provider,
-    source: &HeaderMap,
-    model: &str,
-) -> Result<(), Option<&'static str>> {
-    let url = super::responses_ws::upstream_url(provider, &"/responses".parse().unwrap())
-        .map_err(|_| None)?;
-    let official = providers::is_codex_official_provider(provider);
-    if official {
-        let token = super::responses_ws::bearer(source).ok_or(None)?;
-        super::codex_quota_protection::admit(token, source)
-            .await
-            .map_err(|_| None)?;
-    }
-    let mut headers = super::responses_ws::upstream_headers(source, provider, official, "probe")
-        .map_err(|_| None)?;
-    for name in [
-        "connection",
-        "upgrade",
-        "sec-websocket-version",
-        "sec-websocket-key",
-        "x-codex-turn-state",
-        "conversation_id",
-        "thread-id",
-    ] {
-        headers.remove(name);
-    }
-    let session = uuid::Uuid::new_v4().to_string();
-    for name in [
-        "session_id",
-        "session-id",
-        "x-session-id",
-        "x-client-request-id",
-    ] {
-        headers.insert(name, HeaderValue::from_str(&session).unwrap());
-    }
-    headers.insert("content-type", HeaderValue::from_static("application/json"));
-    headers.insert("accept", HeaderValue::from_static("text/event-stream"));
-    headers.insert("accept-encoding", HeaderValue::from_static("identity"));
-    let started = std::time::Instant::now();
-    let request = json!({"model":model,"instructions":"Preserve the supplied marker in a concise native compaction.","store":false,"stream":true,"reasoning":{"effort":"low"},"tools":[],"input":[{"role":"user","content":"Capability check: remember CCS-CMP."},{"type":"compaction_trigger"}]});
-    let response = super::http_client::no_redirect()
-        .map_err(|_| None)?
-        .post(url)
-        .headers(headers)
-        .json(&request)
-        .send()
-        .await
-        .map_err(|_| None)?;
-    let status = response.status().as_u16();
-    if matches!(status, 401 | 403 | 404 | 405 | 426 | 501) {
-        return Err(Some("Native compaction check was refused on this route"));
-    }
-    if !response.status().is_success() {
-        return Err(None);
-    }
-    let (_, _, bytes) = super::response_processor::read_decoded_body(
-        super::hyper_client::ProxyResponse::Reqwest(response),
-        "CodexCapability",
-        Duration::from_secs(180),
-    )
-    .await
-    .map_err(|_| None)?;
-    let mut terminal = serde_json::from_slice::<Value>(&bytes).ok();
-    if terminal.is_none() {
-        for line in String::from_utf8_lossy(&bytes)
-            .lines()
-            .filter_map(|line| line.strip_prefix("data:"))
-        {
-            if let Ok(event) = serde_json::from_str::<Value>(line.trim()) {
-                if event["type"] == "response.completed" {
-                    terminal = event.get("response").cloned();
-                }
-            }
-        }
-    }
-    let response = terminal.ok_or(None)?;
-    let valid = response["output"].as_array().is_some_and(|items| {
-        items.iter().any(|item| {
-            item["type"] == "compaction"
-                && item["encrypted_content"]
-                    .as_str()
-                    .is_some_and(|s| !s.is_empty() && !s.starts_with("ccswitch-"))
-        })
-    });
-    if super::response_processor::usage_logging_enabled(state) {
-        super::response_processor::log_usage_internal(
-            state,
-            &provider.id,
-            "codex",
-            model,
-            model,
-            model,
-            super::usage::parser::TokenUsage::from_codex_response_auto(&response)
-                .unwrap_or_default(),
-            started.elapsed().as_millis() as u64,
-            None,
-            true,
-            200,
-            Some(format!("capability-probe-{session}")),
         )
-        .await;
-    }
-    if valid {
-        Ok(())
-    } else {
-        Err(Some(
-            "This route returned a summary without native compaction",
-        ))
+    {
+        notify(state);
     }
 }

@@ -265,5 +265,4 @@ export interface CodexCapabilities {
   model: string;
   ws: CodexCapabilityEvidence | null;
   cmp: CodexCapabilityEvidence | null;
-  checkingCmp: boolean;
 }

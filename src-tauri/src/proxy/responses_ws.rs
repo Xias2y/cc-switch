@@ -71,10 +71,6 @@ impl Default for ResponsesWsState {
 }
 
 impl ResponsesWsState {
-    pub(super) fn subscribe(&self) -> watch::Receiver<u64> {
-        self.shutdown.subscribe()
-    }
-
     pub(super) fn shutdown(&self) {
         self.shutdown
             .send_modify(|generation| *generation = generation.wrapping_add(1));

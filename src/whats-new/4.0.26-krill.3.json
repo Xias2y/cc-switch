@@ -1,0 +1,19 @@
+{
+  "version": "4.0.26-krill.3",
+  "items": [
+    {
+      "type": "fix",
+      "zh": "WS / CMP 改为仅观察正常请求，取消额外压缩探测",
+      "zh-TW": "WS / CMP 改為僅觀察正常請求，取消額外壓縮探測",
+      "en": "WS / CMP observe normal traffic only; remove the extra compaction probe",
+      "ja": "WS / CMP は通常の通信だけを監視し、追加の圧縮チェックを廃止"
+    },
+    {
+      "type": "improve",
+      "zh": "未观察到原生压缩时 CMP 为灰色，不额外消耗 token",
+      "zh-TW": "未觀察到原生壓縮時 CMP 為灰色，不額外消耗 token",
+      "en": "CMP stays gray until native compaction is observed; badges consume no additional tokens",
+      "ja": "実際のネイティブ圧縮を確認するまで CMP は灰色。追加トークン消費なし"
+    }
+  ]
+}
