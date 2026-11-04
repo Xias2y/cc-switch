@@ -46,6 +46,7 @@ pub struct ProxyState {
     pub gemini_shadow: Arc<GeminiShadowStore>,
     /// Codex Chat bridge history，用于恢复 previous_response_id 指向的 tool call
     pub codex_chat_history: Arc<CodexChatHistoryStore>,
+    pub(super) responses_ws: Arc<super::responses_ws::ResponsesWsState>,
     /// AppHandle，用于发射事件和更新托盘菜单
     pub app_handle: Option<tauri::AppHandle>,
     /// 故障转移切换管理器
@@ -89,6 +90,7 @@ impl ProxyServer {
             provider_router,
             gemini_shadow: Arc::new(GeminiShadowStore::default()),
             codex_chat_history: Arc::new(CodexChatHistoryStore::default()),
+            responses_ws: Arc::new(super::responses_ws::ResponsesWsState::default()),
             app_handle,
             failover_manager,
         };
@@ -204,6 +206,7 @@ impl ProxyServer {
                             if let Err(e) = hyper::server::conn::http1::Builder::new()
                                 .preserve_header_case(true)
                                 .serve_connection(TokioIo::new(stream), service)
+                                .with_upgrades()
                                 .await
                             {
                                 // Connection reset / broken pipe 等在代理场景下很常见，debug 级别
@@ -235,6 +238,7 @@ impl ProxyServer {
     pub async fn stop(&self) -> Result<(), ProxyError> {
         // 1. 发送关闭信号
         if let Some(tx) = self.shutdown_tx.write().await.take() {
+            self.state.responses_ws.shutdown();
             let _ = tx.send(());
         } else {
             return Err(ProxyError::NotRunning);

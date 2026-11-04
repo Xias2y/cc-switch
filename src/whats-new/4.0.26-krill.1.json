@@ -1,0 +1,19 @@
+{
+  "version": "4.0.26-krill.1",
+  "items": [
+    {
+      "type": "new",
+      "zh": "Codex 聚合支持官方与 Krill 原生 WS 和上下文压缩",
+      "zh-TW": "Codex 聚合支援官方與 Krill 原生 WS 和上下文壓縮",
+      "en": "Native WS and context compaction for official accounts and Krill in Codex aggregation",
+      "ja": "Codex 集約で公式と Krill のネイティブ WS・文脈圧縮に対応"
+    },
+    {
+      "type": "improve",
+      "zh": "HTTP 请求自动压缩，WS 不可用时回退 HTTP",
+      "zh-TW": "HTTP 請求自動壓縮，WS 不可用時回退 HTTP",
+      "en": "Automatic HTTP request compression and HTTP fallback when WebSocket is unavailable",
+      "ja": "HTTP リクエストを自動圧縮し、WS 接続不可時は HTTP に切り替え"
+    }
+  ]
+}

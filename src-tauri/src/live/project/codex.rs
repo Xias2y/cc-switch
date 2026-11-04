@@ -816,7 +816,7 @@ impl CodexConfigPatch {
                 put_table(
                     providers,
                     ROUTE_ID,
-                    official_mirror_table(Some(base_url), false),
+                    official_mirror_table(Some(base_url), true),
                     container_inline,
                 );
             }
@@ -836,7 +836,7 @@ impl CodexConfigPatch {
             RouteWrite::OfficialProxy {
                 base_url,
                 unified: true,
-            } => Some((ROUTE_ID, official_mirror_table(Some(base_url), false))),
+            } => Some((ROUTE_ID, official_mirror_table(Some(base_url), true))),
             RouteWrite::BuiltIn {
                 id,
                 table: Some(table),
@@ -1163,7 +1163,7 @@ mod tests {
             assert_eq!(mirror["name"].as_str(), Some("OpenAI"));
             assert_eq!(mirror["base_url"].as_str(), Some(PROXY));
             assert_eq!(mirror["requires_openai_auth"].as_bool(), Some(true));
-            assert_eq!(mirror["supports_websockets"].as_bool(), Some(false));
+            assert_eq!(mirror["supports_websockets"].as_bool(), Some(true));
             assert!(mirror.get("experimental_bearer_token").is_none());
         }
     }

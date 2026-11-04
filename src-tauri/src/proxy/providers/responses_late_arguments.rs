@@ -122,7 +122,7 @@ impl Block {
 }
 
 #[derive(Default)]
-struct Repair {
+pub(crate) struct Repair {
     /// 每个条目累积的参数增量。
     arguments: HashMap<String, String>,
     /// 扣住的结束事件，保持原来的顺序。
@@ -130,7 +130,7 @@ struct Repair {
 }
 
 impl Repair {
-    fn push(&mut self, raw: &str) -> Vec<Bytes> {
+    pub(crate) fn push(&mut self, raw: &str) -> Vec<Bytes> {
         let block = Block::parse(raw);
         let mut out = Vec::new();
 

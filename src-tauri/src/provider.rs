@@ -485,6 +485,15 @@ impl LocalProxyRequestOverrides {
 /// 供应商元数据
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderMeta {
+    /// Native Codex compaction override; absent uses known Krill GPT support.
+    #[serde(
+        rename = "codexNativeCompaction",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub codex_native_compaction: Option<bool>,
+    /// Independent HTTP request-compression override (not a compaction capability).
+    #[serde(rename = "codexRequestZstd", skip_serializing_if = "Option::is_none")]
+    pub codex_request_zstd: Option<bool>,
     /// 自定义端点列表（按 URL 去重存储）
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub custom_endpoints: HashMap<String, crate::settings::CustomEndpoint>,

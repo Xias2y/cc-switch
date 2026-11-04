@@ -2,6 +2,10 @@
 
 # CC Switch
 
+> **Krill-focused fork (based on upstream v4.0.25).** Adds native Codex Responses WebSockets, context compaction and HTTP zstd for official accounts and Krill in aggregation mode. [Download this fork](https://github.com/Xias2y/cc-switch/releases) · [Implementation and limits](docs/krill-native-backend.md).
+>
+> Thanks to **[@krill-lab/Superba](https://github.com/krill-lab/superba)** for the reference implementation. This is an independent CC Switch fork, not an official upstream release.
+
 ### The All-in-One Manager for Claude Code, Claude Desktop, Codex, Gemini CLI, Grok Build, OpenCode, OpenClaw, Hermes Agent, Pi, MiniMax Code, Kimi Code & Oh My Pi
 
 **Switch API providers in one click and manage MCP, Skills, and Prompts in one place — no more hand-editing JSON / TOML / YAML config files.**

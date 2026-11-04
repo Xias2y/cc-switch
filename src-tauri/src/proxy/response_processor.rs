@@ -440,7 +440,7 @@ impl SseUsageCollector {
 /// 判断一行 SSE data 是否标志着模型开始输出（口径同 Sub2API 的 semantic TTFT）：
 /// 跳过只宣告响应开始或保活的元数据事件，其余非空事件都算。Chat Completions /
 /// Gemini 的分块没有事件类型，一律算。
-fn sse_data_starts_output(event_name: Option<&str>, data: &str) -> bool {
+pub(super) fn sse_data_starts_output(event_name: Option<&str>, data: &str) -> bool {
     let data = data.trim();
     if data.is_empty() || data == "[DONE]" {
         return false;
@@ -654,7 +654,7 @@ pub(crate) fn usage_logging_enabled(state: &ProxyState) -> bool {
 /// 「按代理发出的请求计价、不信任上游回显」，接管场景下发出的请求模型是
 /// 映射后的 Y 而非客户端别名 X，按 X 计价会用错定价表行。
 #[allow(clippy::too_many_arguments)]
-async fn log_usage_internal(
+pub(super) async fn log_usage_internal(
     state: &ProxyState,
     provider_id: &str,
     app_type: &str,

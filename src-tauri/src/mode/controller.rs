@@ -3568,7 +3568,7 @@ mod mode_tests {
                 let mirror = &doc["model_providers"]["custom"];
                 assert_eq!(mirror["name"].as_str(), Some("OpenAI"));
                 assert_eq!(mirror["requires_openai_auth"].as_bool(), Some(true));
-                assert_eq!(mirror["supports_websockets"].as_bool(), Some(false));
+                assert_eq!(mirror["supports_websockets"].as_bool(), Some(true));
                 assert!(mirror.get("experimental_bearer_token").is_none());
                 assert!(
                     mirror["base_url"].as_str().unwrap().ends_with("/v1"),

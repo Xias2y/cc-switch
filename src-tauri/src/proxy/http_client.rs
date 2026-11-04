@@ -212,6 +212,22 @@ pub fn get_for_url(url: &str) -> Client {
     }
 }
 
+/// RFC 6455 Upgrade requires HTTP/1.1; the ordinary pooled client can negotiate
+/// HTTP/2 via ALPN. Retain the same proxy policy without following redirects.
+pub(crate) fn websocket_for_url(url: &str) -> Result<Client, String> {
+    let builder = base_builder()
+        .http1_only()
+        .redirect(reqwest::redirect::Policy::none());
+    if is_loopback_url(url) {
+        builder
+            .no_proxy()
+            .build()
+            .map_err(|e| format!("Failed to build WebSocket client: {e}"))
+    } else {
+        build_client_from(builder, get_current_proxy_url().as_deref())
+    }
+}
+
 /// 发往 `url` 时应使用的上游代理：本机地址返回 None（直连），其余返回当前全局代理
 pub fn proxy_url_for(url: &str) -> Option<String> {
     upstream_proxy_for(url, get_current_proxy_url())

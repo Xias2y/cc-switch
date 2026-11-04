@@ -177,7 +177,7 @@ fn claude_model_discovery(state: &ProxyState) -> Value {
 /// 不解码。普通模型名不读任何状态，路由请求的路径不变。
 ///
 /// `Err` 是在进入路由之前就拒绝的请求，直接返回给客户端（装箱：`Response` 太大）。
-fn resolve_stack_target(
+pub(super) fn resolve_stack_target(
     state: &ProxyState,
     app_type: &AppType,
     body: &mut Value,
@@ -1042,20 +1042,12 @@ pub async fn handle_chat_completions(
     .await
 }
 
-/// Responses 的 WebSocket 握手（GET 升级请求）：本地代理只讲 HTTP/SSE，回 426。Codex 内置
-/// 的 openai 默认先连 WebSocket，握手拿到 426 就在本会话里改走 HTTP，其它失败要把重试
-/// 用完才回退。
-pub async fn handle_responses_websocket() -> (StatusCode, Json<Value>) {
-    (
-        StatusCode::UPGRADE_REQUIRED,
-        Json(json!({
-            "error": {
-                "type": "invalid_request_error",
-                "code": "websocket_not_supported",
-                "message": "CC Switch local routing does not support Responses over WebSocket; use HTTP",
-            }
-        })),
-    )
+/// Native Responses WebSocket ingress; model selection happens in response.create.
+pub async fn handle_responses_websocket(
+    State(state): State<ProxyState>,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    super::responses_ws::upgrade(state, request).await
 }
 
 /// 处理 /v1/responses 请求（OpenAI Responses API - Codex CLI 透传）
@@ -1181,12 +1173,16 @@ async fn handle_responses_for_app(
         .await;
     }
 
-    // 原生 Responses 第三方的压缩回合：上游只会回普通消息，补上 Codex 要的那个
+    // 不支持原生压缩的第三方回合：上游只会回普通消息，补上 Codex 要的那个
     // compaction 条目（请求侧已在 forwarder 改成摘要回合，见 `codex_compaction`）。
     // 压缩回合不带工具，没有要还原的函数名，所以排在 xAI 改写之前。
     if compaction_request
         && matches!(app_type, AppType::Codex)
         && !super::providers::is_codex_official_provider(&ctx.provider)
+        && !super::codex_native::native_compaction(
+            &ctx.provider,
+            ctx.outbound_model.as_deref().unwrap_or(&ctx.request_model),
+        )
     {
         return handle_codex_native_compaction_response(response, &ctx, &state, connection_guard)
             .await;
@@ -2313,8 +2309,16 @@ fn build_codex_proxy_error_response(
     error: &ProxyError,
     is_stream: bool,
 ) -> Result<axum::response::Response, ProxyError> {
-    let status = axum::http::StatusCode::from_u16(map_proxy_error_to_status(error))
+    let mut status = axum::http::StatusCode::from_u16(map_proxy_error_to_status(error))
         .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    // An aggregated third party's API key failure must not refresh the
+    // official Codex login used to authenticate the shared local ingress.
+    if (ctx.is_stack || crate::mode::stack::stack_mode_now(&ctx.app_type))
+        && !super::providers::is_codex_official_provider(&ctx.provider)
+        && status == StatusCode::UNAUTHORIZED
+    {
+        status = StatusCode::BAD_GATEWAY;
+    }
     let body = codex_proxy_error_json(&ctx.provider.name, &ctx.request_model, endpoint, error);
     let responses_endpoint = matches!(
         endpoint.split('?').next(),

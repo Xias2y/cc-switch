@@ -190,14 +190,19 @@ pub(crate) fn compaction_incomplete_reason(finish_reason: Option<&str>) -> Optio
 ///
 /// 别的压缩条目看不出来源，可能正是这家自己签发、能正常解开的，原样发出；上游明确拒绝后
 /// 由 `opaque_state_rectifier` 换成文字重试。请求里没有前两类条目时一个字节都不动。
+#[cfg(test)]
 pub(crate) fn prepare_native_third_party_request(body: &mut Value) -> bool {
+    prepare_third_party_request(body, true)
+}
+
+/// Expand existing CCS envelopes on every route; rewrite triggers only for synthetic compaction.
+pub(crate) fn prepare_third_party_request(body: &mut Value, bridge_trigger: bool) -> bool {
     let Some(items) = body.get("input").and_then(Value::as_array) else {
         return false;
     };
-    if !items
-        .iter()
-        .any(|item| is_compaction_trigger(item) || own_compaction_summary(item).is_some())
-    {
+    if !items.iter().any(|item| {
+        bridge_trigger && is_compaction_trigger(item) || own_compaction_summary(item).is_some()
+    }) {
         return false;
     }
 
@@ -205,7 +210,7 @@ pub(crate) fn prepare_native_third_party_request(body: &mut Value) -> bool {
     let rewritten: Vec<Value> = items
         .iter()
         .map(|item| {
-            if is_compaction_trigger(item) {
+            if bridge_trigger && is_compaction_trigger(item) {
                 compaction = true;
                 compaction_prompt_item()
             } else if let Some(summary) = own_compaction_summary(item) {
@@ -377,13 +382,13 @@ where
 }
 
 #[derive(Default)]
-struct NativeCompactionState {
+pub(crate) struct NativeCompactionState {
     done_items: Vec<Value>,
     next_output_index: u64,
 }
 
 impl NativeCompactionState {
-    fn handle_block(&mut self, block: &str) -> Vec<Bytes> {
+    pub(crate) fn handle_block(&mut self, block: &str) -> Vec<Bytes> {
         let passthrough = || vec![Bytes::from(format!("{block}\n\n"))];
         let data = block
             .lines()

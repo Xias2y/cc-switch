@@ -213,6 +213,51 @@ fn validate_codex_official_authorization(
     }
 }
 
+pub(super) async fn validate_codex_official_request(
+    headers: &http::HeaderMap,
+    provider: &Provider,
+    app_handle: Option<&tauri::AppHandle>,
+) -> Result<(), ProxyError> {
+    let (expected_chatgpt_account_id, managed_session_matches) = match provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.managed_account_id_for("codex_oauth"))
+    {
+        Some(local_account_id) => {
+            let app_handle = app_handle.ok_or_else(|| {
+                ProxyError::AuthError("Codex OAuth 认证不可用（无 AppHandle）".to_string())
+            })?;
+            let codex_state = app_handle.state::<CodexOAuthState>();
+            let chatgpt_account_id = codex_state
+                .0
+                .chatgpt_account_id_for_account(&local_account_id)
+                .await
+                .map_err(|error| {
+                    ProxyError::AuthError(format!("Codex OAuth 账号解析失败: {error}"))
+                })?;
+            let session_matches = match codex_bearer_access_token(headers) {
+                Some(access_token) => crate::codex_config::codex_live_auth_matches_managed_request(
+                    &local_account_id,
+                    access_token,
+                )
+                .map_err(|error| {
+                    ProxyError::AuthError(format!("Codex OAuth 会话校验失败: {error}"))
+                })?,
+                None => false,
+            };
+            (Some(chatgpt_account_id), Some(session_matches))
+        }
+        None => (None, None),
+    };
+    validate_codex_official_authorization(
+        headers,
+        provider,
+        expected_chatgpt_account_id.as_deref(),
+        managed_session_matches,
+    )?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodexUpstreamFormat {
     NativeResponses,
@@ -443,7 +488,25 @@ impl RequestForwarder {
         }
         let codex_third_party = matches!(app_type, AppType::Codex)
             && !super::providers::is_codex_official_provider(provider);
-        detect_opaque_state_rejection(error, &self.rectifier_config, request, codex_third_party)
+        let rejection = detect_opaque_state_rejection(
+            error,
+            &self.rectifier_config,
+            request,
+            codex_third_party,
+        )?;
+        if matches!(app_type, AppType::Codex)
+            && rejection.compaction
+            && super::codex_native::native_compaction(
+                provider,
+                request["model"].as_str().unwrap_or_default(),
+            )
+            && super::codex_native::carries_native_compaction(request)
+        {
+            // Native compaction is the only remaining copy of earlier history.
+            // Preserve an unreadable item and report the failure instead of erasing it.
+            return None;
+        }
+        Some(rejection)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1381,6 +1444,9 @@ impl RequestForwarder {
         codex_upstream_format_out: &mut Option<CodexUpstreamFormat>,
     ) -> Result<(ProxyResponse, Option<String>, Option<String>), ProxyError> {
         *codex_upstream_format_out = None;
+        if matches!(app_type, AppType::Codex) {
+            super::codex_native::validate(provider, headers, body)?;
+        }
         // 使用适配器提取 base_url
         let mut base_url = adapter.extract_base_url(provider)?;
 
@@ -1413,45 +1479,7 @@ impl RequestForwarder {
         let mut quota_token = None;
 
         if codex_official_auth_passthrough {
-            let (expected_chatgpt_account_id, managed_session_matches) = match provider
-                .meta
-                .as_ref()
-                .and_then(|meta| meta.managed_account_id_for("codex_oauth"))
-            {
-                Some(local_account_id) => {
-                    let app_handle = self.app_handle.as_ref().ok_or_else(|| {
-                        ProxyError::AuthError("Codex OAuth 认证不可用（无 AppHandle）".to_string())
-                    })?;
-                    let codex_state = app_handle.state::<CodexOAuthState>();
-                    let chatgpt_account_id = codex_state
-                        .0
-                        .chatgpt_account_id_for_account(&local_account_id)
-                        .await
-                        .map_err(|error| {
-                            ProxyError::AuthError(format!("Codex OAuth 账号解析失败: {error}"))
-                        })?;
-                    let session_matches = match codex_bearer_access_token(headers) {
-                        Some(access_token) => {
-                            crate::codex_config::codex_live_auth_matches_managed_request(
-                                &local_account_id,
-                                access_token,
-                            )
-                            .map_err(|error| {
-                                ProxyError::AuthError(format!("Codex OAuth 会话校验失败: {error}"))
-                            })?
-                        }
-                        None => false,
-                    };
-                    (Some(chatgpt_account_id), Some(session_matches))
-                }
-                None => (None, None),
-            };
-            validate_codex_official_authorization(
-                headers,
-                provider,
-                expected_chatgpt_account_id.as_deref(),
-                managed_session_matches,
-            )?;
+            validate_codex_official_request(headers, provider, self.app_handle.as_ref()).await?;
             if method == http::Method::POST {
                 let token = codex_bearer_access_token(headers).ok_or_else(|| {
                     ProxyError::AuthError(
@@ -1974,7 +2002,8 @@ impl RequestForwarder {
         // Codex 远程压缩，以及同一线程里别家回合留下的状态（见 `codex_compaction`）。
         // Chat / Anthropic 转换在转换器里处理；这里管原样转发的两种上游：官方清掉
         // CC Switch 产出、官方一定会拒的条目，原生 Responses 第三方把压缩触发和
-        // CC Switch 包装的压缩摘要改成普通消息。看不出来源的密文原样发出，被拒后由
+        // CC Switch 包装的压缩摘要改成普通消息；已知原生压缩的 Krill/GPT 保留触发。
+        // 看不出来源的密文原样发出，被拒后由
         // `opaque_state_rectifier` 处理。请求里没有这些条目时逐字节不变。
         if matches!(app_type, AppType::Codex)
             && !codex_responses_to_chat
@@ -1989,13 +2018,8 @@ impl RequestForwarder {
                         provider.id
                     );
                 }
-            } else if super::providers::codex_compaction::prepare_native_third_party_request(
-                &mut request_body,
-            ) {
-                log::debug!(
-                    "[Codex] Rewrote compaction items for a native Responses upstream (provider={})",
-                    provider.id
-                );
+            } else {
+                super::codex_native::prepare(provider, &mut request_body);
             }
         }
 
@@ -2529,7 +2553,10 @@ impl RequestForwarder {
                 codex_responses_to_chat,
                 codex_stack_request,
                 codex_official_auth_passthrough,
-            ) {
+            ) && !(!codex_responses_to_chat
+                && !codex_responses_to_anthropic
+                && super::codex_native::protocol_header(provider, key_str))
+            {
                 continue;
             }
 
@@ -2779,25 +2806,64 @@ impl RequestForwarder {
             for (key, value) in &ordered_headers {
                 request = request.header(key, value);
             }
-            let send = request.body(body_bytes).send();
-            let send_result = if request_is_streaming {
-                let header_timeout = if self.streaming_first_byte_timeout.is_zero() {
-                    timeout
-                } else {
-                    self.streaming_first_byte_timeout
-                };
-                tokio::time::timeout(header_timeout, send)
-                    .await
-                    .map_err(|_| {
-                        ProxyError::Timeout(format!(
-                            "流式响应首包超时: {}s（上游未返回响应头）",
-                            header_timeout.as_secs()
-                        ))
-                    })?
+            let compressed = if matches!(app_type, AppType::Codex)
+                && method == http::Method::POST
+                && endpoint
+                    .split('?')
+                    .next()
+                    .is_some_and(|p| p.trim_end_matches('/').ends_with("/responses"))
+                && !codex_responses_to_chat
+                && !codex_responses_to_anthropic
+                && !ordered_headers.contains_key(http::header::CONTENT_ENCODING)
+            {
+                super::codex_native::compress(provider, &url, &body_bytes).await
             } else {
-                send.await
+                None
             };
-            let reqwest_resp = send_result.map_err(map_reqwest_send_error)?;
+            let plain = request.body(body_bytes);
+            let mut first_refusal = None;
+            let reqwest_resp = loop {
+                let mut attempt = plain.try_clone().ok_or_else(|| {
+                    ProxyError::Internal("Cannot clone buffered upstream request".into())
+                })?;
+                if first_refusal.is_none() {
+                    if let Some(body) = &compressed {
+                        attempt = attempt
+                            .header(http::header::CONTENT_ENCODING, "zstd")
+                            .body(body.clone());
+                    }
+                }
+                let send = attempt.send();
+                let send_result = if request_is_streaming {
+                    let header_timeout = if self.streaming_first_byte_timeout.is_zero() {
+                        timeout
+                    } else {
+                        self.streaming_first_byte_timeout
+                    };
+                    tokio::time::timeout(header_timeout, send)
+                        .await
+                        .map_err(|_| {
+                            ProxyError::Timeout(format!(
+                                "流式响应首包超时: {}s（上游未返回响应头）",
+                                header_timeout.as_secs()
+                            ))
+                        })?
+                } else {
+                    send.await
+                };
+                let answer = send_result.map_err(map_reqwest_send_error)?;
+                if let Some(first) = first_refusal {
+                    if first == 415 || answer.status().as_u16() != first {
+                        super::codex_native::note_zstd_refused(provider, &url);
+                    }
+                    break answer;
+                }
+                if compressed.is_some() && matches!(answer.status().as_u16(), 400 | 415 | 422) {
+                    first_refusal = Some(answer.status().as_u16());
+                    continue;
+                }
+                break answer;
+            };
             ProxyResponse::Reqwest(reqwest_resp)
         } else {
             // HTTP 代理或直连：走 hyper raw write（保持 header 大小写）
@@ -2865,6 +2931,14 @@ impl RequestForwarder {
                 response = self
                     .hold_encrypted_agent_task_stream(response, &filtered_body)
                     .await?;
+            }
+            if matches!(app_type, AppType::Codex)
+                && !codex_responses_to_chat
+                && !codex_responses_to_anthropic
+            {
+                response =
+                    super::codex_native::observe_http(response, provider, headers, &filtered_body)
+                        .await?;
             }
             Ok((response, resolved_claude_api_format, outbound_model))
         } else {
@@ -3647,7 +3721,7 @@ fn is_codex_client_fingerprint_header(key_str: &str) -> bool {
 /// and reject requests without it. Keep only that marker; all other Codex and
 /// OpenAI identity headers remain stripped. Converted Chat/Anthropic requests
 /// continue to receive a clean client fingerprint.
-fn should_strip_codex_client_fingerprint_header(
+pub(super) fn should_strip_codex_client_fingerprint_header(
     key_str: &str,
     endpoint: &str,
     codex_responses_to_anthropic: bool,
@@ -4364,7 +4438,7 @@ fn summarize_text_for_log(text: &str, max_chars: usize) -> String {
     format!("{truncated}...")
 }
 
-fn apply_local_proxy_body_overrides(
+pub(super) fn apply_local_proxy_body_overrides(
     body: &mut Value,
     overrides: &LocalProxyRequestOverrides,
 ) -> bool {
@@ -4418,7 +4492,7 @@ fn merge_json_override_inner(target: &mut Value, patch: &Value, is_top_level: bo
     }
 }
 
-fn apply_local_proxy_header_overrides(
+pub(super) fn apply_local_proxy_header_overrides(
     headers: &mut http::HeaderMap,
     overrides: Option<&LocalProxyRequestOverrides>,
     is_copilot: bool,
