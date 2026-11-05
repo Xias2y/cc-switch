@@ -19,11 +19,22 @@ Native compaction items are forwarded as issued by the upstream. Existing CCS
 summary envelopes still expand into text for backward compatibility. Only
 fingerprints, provider identifiers and credential fingerprints are stored in
 the device-local `codex-compaction-owners.json`; no ciphertext or tokens are
-stored. A model explicitly selected from another provider is refused when it
-conflicts with a known compaction source. Unlike failover routing, aggregation
-must not silently change the selected provider. Unknown imported history is
-tried intact and adopted only after a successful native response. A native
-compaction rejection does not erase the only copy of earlier context.
+stored. Since 0.1.1, these records are diagnostic only: provider/account/key
+changes do not reject a manually selected target. The selected upstream receives
+the native history intact and decides whether it can read it. The first observed
+maker or successful reader remains recorded; later readers do not replace it.
+
+A native compaction rejection does not erase earlier context or replace it with
+a placeholder. A rejection naming a native compaction (by item id, ciphertext
+ends, exact input parameter or compaction wording) is passed through. Other
+self-identified encrypted-state errors retain CCS's existing single retry and
+current-sub-agent-task protection. Native compaction items, including their ids,
+remain unchanged during that repair. Generic 400/422 errors do not trigger a
+native-compaction rewrite. WS uses the same policy and returns to the HTTP
+repair path only when another state item can actually be repaired, before any
+productive output reaches the client. Legacy CCS summaries still expand normally.
+This allows an attempt at cross-provider use; it does not guarantee that every
+upstream can decrypt every imported history.
 
 HTTP `/responses` uploads above 1 KiB are zstd-compressed when enabled and when
 compression reduces size. Large bodies compress outside the async worker.
@@ -36,6 +47,17 @@ an incremental conversation to a different provider. Switching providers closes
 with 1012; unsupported WS routes use the existing HTTP fallback. No upstream
 per-message deflate is negotiated. Context compaction and HTTP zstd compression
 are separate features.
+
+Like Superba, both WS legs share the HTTP body limit for complete messages
+(CCS currently uses 200 MiB), with individual frames capped at 64 MiB. There
+is no separate eight-response admission limit. An oversized message or frame
+closes both legs with 1009 and records unfinished turns as failed.
+
+Rejected WS handshakes read at most 64 KiB for at most five seconds, preserving
+the upstream JSON `error` object in the client's WS error event. Invalid,
+missing or unreadable JSON uses a provider/status explanation, without
+forwarding a raw HTML body. This read deadline only applies after a rejected
+handshake; it does not shorten the normal handshake wait.
 
 Upstream Upgrade handshakes use an HTTP/1.1-only client with the existing proxy
 policy. They do not negotiate HTTP/2 or follow redirects. One transport failure
@@ -70,6 +92,6 @@ object, are observed for ownership; encoded JSON is decoded only for observation
 and its original response bytes and headers continue through CCS processing.
 
 This is not a port of Superba's entire router. CCS keeps one configured Krill
-endpoint, its own timeout and capacity policies, one-shot per-session HTTP
+endpoint, its own timeout and HTTP body capacity, one-shot per-session HTTP
 fallback, and its existing summary-envelope compatibility. Superba's multi-line
 selection, active probes and one-hour per-line WS-refusal memory are not added.

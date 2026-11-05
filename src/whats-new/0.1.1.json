@@ -1,0 +1,33 @@
+{
+  "version": "0.1.1",
+  "items": [
+    {
+      "type": "fix",
+      "zh": "取消压缩来源拦截，切换后交给选中的上游尝试",
+      "zh-TW": "取消壓縮來源攔截，切換後交給選中的上游嘗試",
+      "en": "Allow the selected upstream to try imported compacted history without a local provenance gate",
+      "ja": "圧縮履歴の出所による拒否を廃止し、選択した接続先へ転送"
+    },
+    {
+      "type": "fix",
+      "zh": "恢复其他密文修复，完整保留原生压缩内容",
+      "zh-TW": "恢復其他密文修復，完整保留原生壓縮內容",
+      "en": "Repair other encrypted state while preserving native compacted history and upstream errors",
+      "ja": "他の暗号化状態を修復しつつネイティブ圧縮履歴を保持"
+    },
+    {
+      "type": "improve",
+      "zh": "WS 消息跟随 HTTP 容量，取消额外的并行数量限制",
+      "zh-TW": "WS 訊息跟隨 HTTP 容量，取消額外的並行數量限制",
+      "en": "Match WS message capacity to HTTP and remove the extra eight-response admission limit",
+      "ja": "WS メッセージ容量を HTTP に合わせ、独自の同時応答数制限を削除"
+    },
+    {
+      "type": "fix",
+      "zh": "保留 WS 握手错误详情，继续隔离第三方认证错误",
+      "zh-TW": "保留 WS 握手錯誤詳情，繼續隔離第三方認證錯誤",
+      "en": "Preserve upstream WS handshake error details and keep third-party authentication isolated",
+      "ja": "WS 接続時の上流エラー詳細と第三者認証エラーの分離を維持"
+    }
+  ]
+}

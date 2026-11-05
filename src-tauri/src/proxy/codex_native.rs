@@ -154,34 +154,6 @@ impl Owners {
     }
 }
 
-/// Stack model selection is explicit: never silently charge a different provider.
-/// Unlike failover routing, a conflicting selection is refused, not rerouted.
-pub(super) fn validate(
-    provider: &Provider,
-    headers: &HeaderMap,
-    request: &Value,
-) -> Result<(), ProxyError> {
-    let fingerprints = compactions(request, "input");
-    if fingerprints.is_empty() {
-        return Ok(());
-    }
-    let selected = identity(provider, headers);
-    let mut owners = owners().lock().expect("compaction owner lock");
-    owners.load();
-    if fingerprints.iter().any(|fp| {
-        owners
-            .records
-            .get(fp)
-            .is_some_and(|owner| owner.identity != selected)
-    }) {
-        return Err(ProxyError::UpstreamError { status: 400, body: Some(json!({"error":{
-            "type":"invalid_request_error", "code":"compaction_provider_mismatch",
-            "message":"This history was compacted by another provider or account. Switch back to its source provider, or start a new conversation. The compacted history was preserved."
-        }}).to_string()) });
-    }
-    Ok(())
-}
-
 pub(super) fn observe(provider: &Provider, headers: &HeaderMap, request: &Value, response: &Value) {
     if response["status"].as_str() != Some("completed")
         && response["object"].as_str() != Some("response.compaction")

@@ -55,6 +55,12 @@ pub(crate) fn is_compaction_item(item: &Value) -> bool {
     )
 }
 
+/// Opaque upstream history must survive compatibility repairs unchanged.
+pub(crate) fn is_native_compaction_item(item: &Value) -> bool {
+    is_compaction_item(item)
+        && compaction_encrypted_content(item).is_some_and(|content| !is_ccswitch_envelope(content))
+}
+
 pub(crate) fn is_compaction_trigger(item: &Value) -> bool {
     item.get("type").and_then(Value::as_str) == Some("compaction_trigger")
 }

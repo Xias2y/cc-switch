@@ -57,7 +57,7 @@ fn native_trigger_tools_and_format_are_preserved_and_legacy_envelopes_still_expa
 
 #[test]
 #[serial_test::serial]
-fn ownership_survives_reload_and_rejects_account_or_credential_changes() {
+fn ownership_survives_reload_without_treating_a_new_reader_as_the_maker() {
     assert!(std::env::var_os("CC_SWITCH_TEST_HOME").is_some());
     let mut source = provider("https://example.org");
     let blob = format!("native-{}", uuid::Uuid::new_v4());
@@ -65,17 +65,30 @@ fn ownership_survives_reload_and_rejects_account_or_credential_changes() {
     let input = json!({"input":[item.clone()]});
     let response = json!({"status":"completed","output":[item]});
     let headers = HeaderMap::new();
-    validate(&source, &headers, &input).unwrap();
     observe(&source, &headers, &json!({}), &response);
-    validate(&source, &headers, &input).unwrap();
+    let maker = identity(&source, &headers);
     {
         let mut cache = owners().lock().unwrap();
         cache.path = PathBuf::new();
         cache.records.clear();
+        cache.load();
+        assert_eq!(
+            cache.records[&compactions(&input, "input")[0]].identity,
+            maker
+        );
     }
-    validate(&source, &headers, &input).unwrap();
+    source.id = "another-provider".into();
     source.settings_config["auth"]["OPENAI_API_KEY"] = json!("changed-secret");
-    assert!(validate(&source, &headers, &input).is_err());
+    observe(
+        &source,
+        &headers,
+        &input,
+        &json!({"status":"completed","output":[]}),
+    );
+    assert_eq!(
+        owners().lock().unwrap().records[&compactions(&input, "input")[0]].identity,
+        maker
+    );
     let saved = std::fs::read_to_string(DeviceStore::for_device().file(OWNER_FILE)).unwrap();
     assert!(!saved.contains(&blob));
     assert!(!saved.contains("test-secret"));
@@ -103,7 +116,7 @@ async fn zstd_roundtrip_small_body_and_refusal_isolation() {
 
 #[test]
 #[serial_test::serial]
-fn official_token_rotation_keeps_history_but_account_switch_does_not() {
+fn official_identity_ignores_token_rotation_and_records_account_changes_only() {
     let mut source = provider("https://chatgpt.com/backend-api/codex");
     source.id = crate::database::CODEX_OFFICIAL_PROVIDER_ID.into();
     source.settings_config = json!({"auth":{},"config":""});
@@ -130,10 +143,15 @@ fn official_token_rotation_keeps_history_but_account_switch_does_not() {
         "authorization",
         http::HeaderValue::from_static("Bearer token-refreshed"),
     );
-    validate(&source, &headers, &request).unwrap();
+    let same_account = identity(&source, &headers);
     headers.insert(
         "chatgpt-account-id",
         http::HeaderValue::from_static("account-two"),
     );
-    assert!(validate(&source, &headers, &request).is_err());
+    assert_ne!(identity(&source, &headers), same_account);
+    let fingerprint = &compactions(&request, "input")[0];
+    assert_eq!(
+        owners().lock().unwrap().records[fingerprint].identity,
+        same_account
+    );
 }

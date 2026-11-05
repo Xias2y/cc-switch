@@ -489,7 +489,7 @@ fn enable_native(db: &Database, id: &str) {
 
 #[tokio::test]
 #[serial_test::serial]
-async fn native_ws_keeps_trigger_ciphertext_and_refuses_cross_provider_history() {
+async fn native_ws_keeps_trigger_ciphertext_and_allows_cross_provider_history() {
     let mut mock = mock(false).await;
     let (proxy, url, db, _restore) = proxy(&mock.base).await;
     enable_native(&db, "krill");
@@ -509,16 +509,26 @@ async fn native_ws_keeps_trigger_ciphertext_and_refuses_cross_provider_history()
     run_turn(&mut fresh, json!({"type":"response.create","model":"ccs-krill/model-one","input":[item.clone(),{"role":"user","content":"continue"}]})).await;
     let (_, sent) = mock.received.recv().await.unwrap();
     assert_eq!(sent["input"][0], item);
-    let error = run_turn(
-        &mut fresh,
-        json!({"type":"response.create","model":"ccs-other/model-two","input":[item]}),
+    fresh
+        .send(UpMessage::Text(
+            json!({"type":"response.create","model":"ccs-other/model-two","input":[item.clone()]})
+                .to_string(),
+        ))
+        .await
+        .unwrap();
+    let moved = fresh.next().await.unwrap().unwrap();
+    assert!(matches!(moved, UpMessage::Close(Some(frame)) if u16::from(frame.code) == 1012));
+    assert!(mock.received.try_recv().is_err());
+    let mut target = client(&url, "native-switch").await;
+    let events = run_turn(
+        &mut target,
+        json!({"type":"response.create","model":"ccs-other/model-two","input":[item.clone()]}),
     )
     .await;
-    assert_eq!(
-        error.last().unwrap()["error"]["code"],
-        "compaction_provider_mismatch"
-    );
-    assert!(mock.received.try_recv().is_err());
+    assert_eq!(events.last().unwrap()["type"], "response.completed");
+    let (headers, sent) = mock.received.recv().await.unwrap();
+    assert_eq!(headers["authorization"], "Bearer key-other");
+    assert_eq!(sent["input"][0], item);
     proxy.stop().await.unwrap();
 }
 
@@ -542,12 +552,14 @@ async fn native_http_preserves_compaction_and_zstd_and_records_ownership() {
     assert!(codex_compaction::is_compaction_request(&sent));
     let response = reqwest::Client::new()
         .post(&url)
-        .json(&json!({"model":"ccs-other/model-two","input":[item]}))
+        .json(&json!({"model":"ccs-other/model-two","input":[item.clone()]}))
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert!(mock.received.try_recv().is_err());
+    assert_eq!(response.status(), StatusCode::OK);
+    let (headers, sent) = mock.received.recv().await.unwrap();
+    assert_eq!(headers["authorization"], "Bearer key-other");
+    assert_eq!(sent["input"][0], item);
     proxy.stop().await.unwrap();
 }
 
@@ -574,7 +586,7 @@ async fn zstd_refusal_retries_plain_once_then_remembers_the_route() {
 
 #[tokio::test]
 #[serial_test::serial]
-async fn interleaved_streams_keep_summary_bridge_on_its_own_lane() {
+async fn interleaved_streams_keep_summary_bridge_above_eight_pending_responses() {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .unwrap();
@@ -582,7 +594,7 @@ async fn interleaved_streams_keep_summary_bridge_on_its_own_lane() {
     let router = Router::new().route("/v1/responses", get(|ws: WebSocketUpgrade| async move {
         ws.on_upgrade(|mut socket| async move {
             let mut frames = Vec::new();
-            for _ in 0..2 {
+            for _ in 0..9 {
                 let Some(Ok(Message::Text(text))) = socket.recv().await else { return; };
                 frames.push(serde_json::from_str::<Value>(&text).unwrap());
             }
@@ -600,14 +612,16 @@ async fn interleaved_streams_keep_summary_bridge_on_its_own_lane() {
     });
     let (proxy, url, _db, _restore) = proxy(&base).await;
     let mut socket = client(&url, "interleaved").await;
-    for (lane, input) in [
-        ("compact", json!([{"type":"compaction_trigger"}])),
-        ("plain", json!([])),
-    ] {
+    for lane in 0..9 {
+        let input = if lane == 0 {
+            json!([{"type":"compaction_trigger"}])
+        } else {
+            json!([])
+        };
         socket.send(UpMessage::Text(json!({"type":"response.create","model":"ccs-krill/model-one","stream_id":lane,"input":input}).to_string())).await.unwrap();
     }
     let mut completed = std::collections::HashMap::new();
-    while completed.len() < 2 {
+    while completed.len() < 9 {
         let event = tokio::time::timeout(Duration::from_secs(5), socket.next())
             .await
             .unwrap()
@@ -617,7 +631,7 @@ async fn interleaved_streams_keep_summary_bridge_on_its_own_lane() {
             let event: Value = serde_json::from_str(&text).unwrap();
             if event["type"] == "response.completed" {
                 completed.insert(
-                    event["stream_id"].as_str().unwrap().to_owned(),
+                    event["stream_id"].as_u64().unwrap(),
                     if event["response"]["output"]
                         .as_array()
                         .unwrap()
@@ -632,8 +646,10 @@ async fn interleaved_streams_keep_summary_bridge_on_its_own_lane() {
             }
         }
     }
-    assert_eq!(completed["plain"], "message");
-    assert_eq!(completed["compact"], "compaction");
+    assert_eq!(completed[&0], "compaction");
+    for lane in 1..9 {
+        assert_eq!(completed[&lane], "message");
+    }
     proxy.stop().await.unwrap();
     task.abort();
 }
@@ -650,7 +666,7 @@ async fn transport_handshake_retry_never_replays_a_generation() {
     let task = tokio::spawn(async move {
         let (mut first, _) = listener.accept().await.unwrap();
         let mut bytes = [0; 8192];
-        first.read(&mut bytes).await.unwrap();
+        assert!(first.read(&mut bytes).await.unwrap() > 0);
         first.shutdown().await.unwrap();
         drop(first);
         let router = Router::new().route("/v1/responses", get(move |ws: WebSocketUpgrade| async move {
@@ -797,3 +813,6 @@ async fn route_request_counters_count_turns_skip_prewarm_and_release_active_guar
     .unwrap();
     proxy.stop().await.unwrap();
 }
+
+#[path = "regression_tests.rs"]
+mod regression_tests;

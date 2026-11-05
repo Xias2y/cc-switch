@@ -346,21 +346,83 @@ async fn acceptance(
         format!("ccs-krill/{model}")
     };
     http_body["model"] = json!(opposite);
-    let conflict = reqwest::Client::builder()
+    let result = live_cross_provider(url, headers, &http_body).await?;
+    results.push(result);
+    Ok(results.clone())
+}
+
+async fn live_cross_provider(
+    url: &str,
+    headers: &HeaderMap,
+    body: &Value,
+) -> Result<&'static str, String> {
+    let response = reqwest::Client::builder()
         .no_proxy()
         .build()
-        .map_err(|_| "conflict client")?
+        .map_err(|_| "cross-provider client")?
         .post(url)
         .headers(headers.clone())
-        .json(&http_body)
+        .json(body)
+        .timeout(LIVE_WAIT)
         .send()
         .await
-        .map_err(|_| "conflict request")?;
-    if conflict.status() != StatusCode::BAD_REQUEST {
-        return Err("cross-provider compaction was not refused".into());
+        .map_err(|_| "cross-provider request failed")?;
+    let status = response.status().as_u16();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| "cross-provider response body")?;
+    let mut values = Vec::new();
+    if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+        values.push(value);
+    } else {
+        for line in String::from_utf8_lossy(&bytes)
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+        {
+            if let Ok(value) = serde_json::from_str::<Value>(line.trim()) {
+                values.push(value);
+            }
+        }
     }
-    results.push("cross_provider_compaction_preserved_and_refused");
-    Ok(results.clone())
+    for value in values.iter().rev() {
+        let response = if value["type"] == "response.completed" {
+            &value["response"]
+        } else {
+            value
+        };
+        if response["status"] == "completed" {
+            let text = text_of(&[json!({"type":"response.completed","response":response})]);
+            if text.contains("HTTP-742") && text.to_ascii_lowercase().contains("websocket") {
+                return Ok("cross_provider_compaction_accepted_with_context");
+            }
+            return Err("cross-provider continuation lost compacted context".into());
+        }
+        if let Some(error) = value
+            .get("error")
+            .or_else(|| value.pointer("/response/error"))
+        {
+            let code = error["code"].as_str().unwrap_or_default();
+            if code == "compaction_provider_mismatch" {
+                return Err("local provenance admission gate is still present".into());
+            }
+            let message = error["message"]
+                .as_str()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if code == "invalid_encrypted_content"
+                || message.contains("compaction")
+                    && (message.contains("decrypt")
+                        || message.contains("decode")
+                        || message.contains("invalid"))
+            {
+                return Ok("cross_provider_compaction_upstream_rejection_preserved");
+            }
+        }
+    }
+    Err(format!(
+        "Unexpected cross-provider response (HTTP {status}); see private request outcome"
+    ))
 }
 
 async fn live_http(

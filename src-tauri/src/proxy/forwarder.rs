@@ -488,25 +488,7 @@ impl RequestForwarder {
         }
         let codex_third_party = matches!(app_type, AppType::Codex)
             && !super::providers::is_codex_official_provider(provider);
-        let rejection = detect_opaque_state_rejection(
-            error,
-            &self.rectifier_config,
-            request,
-            codex_third_party,
-        )?;
-        if matches!(app_type, AppType::Codex)
-            && rejection.compaction
-            && super::codex_native::native_compaction(
-                provider,
-                request["model"].as_str().unwrap_or_default(),
-            )
-            && super::codex_native::carries_native_compaction(request)
-        {
-            // Native compaction is the only remaining copy of earlier history.
-            // Preserve an unreadable item and report the failure instead of erasing it.
-            return None;
-        }
-        Some(rejection)
+        detect_opaque_state_rejection(error, &self.rectifier_config, request, codex_third_party)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1444,9 +1426,6 @@ impl RequestForwarder {
         codex_upstream_format_out: &mut Option<CodexUpstreamFormat>,
     ) -> Result<(ProxyResponse, Option<String>, Option<String>), ProxyError> {
         *codex_upstream_format_out = None;
-        if matches!(app_type, AppType::Codex) {
-            super::codex_native::validate(provider, headers, body)?;
-        }
         // 使用适配器提取 base_url
         let mut base_url = adapter.extract_base_url(provider)?;
 
@@ -7627,23 +7606,22 @@ mod tests {
             assert_eq!(upstream.seen.lock().await.len(), 2);
         }
 
-        /// Stack 模式下官方压缩过、再切到别家原生 Responses 模型：官方的压缩密文原样发出，
-        /// 那家网关不认识、报错措辞又不在清单里时，只换掉压缩条目对同一家重试一次，
-        /// 这家自己的推理条目照旧发。
+        /// A selected upstream decides readability; rejected native history remains intact.
         #[tokio::test]
-        async fn unrecognized_compaction_is_replaced_after_a_native_third_party_rejects_it() {
-            use crate::proxy::providers::codex_compaction::OPAQUE_COMPACTION_NOTE;
+        async fn rejected_native_compaction_is_preserved_without_placeholder_retry() {
             let unsupported = (
                 400,
-                json!({ "error": { "message": "unsupported input item type: compaction" } }),
+                json!({"error":{"code":"invalid_encrypted_content","message":"The encrypted content for item cmp_keep could not be verified"}}),
             );
-            let upstream = scripted_upstream(vec![unsupported, response_ok()]).await;
+            let upstream = scripted_upstream(vec![unsupported.clone()]).await;
             let mut request = history_with_foreign_reasoning();
-            request["input"].as_array_mut().unwrap().insert(
-                0,
-                json!({ "type": "compaction", "encrypted_content": "gAAAA-openai" }),
-            );
-            forwarder(true)
+            let compact =
+                json!({"type":"compaction","id":"cmp_keep","encrypted_content":"gAAAA-openai"});
+            request["input"]
+                .as_array_mut()
+                .unwrap()
+                .insert(0, compact.clone());
+            let error = forwarder(true)
                 .forward_with_retry(
                     &AppType::Codex,
                     http::Method::POST,
@@ -7654,22 +7632,56 @@ mod tests {
                     vec![provider(&upstream, "openai_responses")],
                 )
                 .await
-                .map_err(|error| error.error)
-                .expect("retried");
-
+                .err()
+                .unwrap();
+            let ProxyError::UpstreamError {
+                status,
+                body: Some(body),
+            } = error.error
+            else {
+                panic!("Expected original upstream error")
+            };
+            assert_eq!(status, 400);
+            assert_eq!(serde_json::from_str::<Value>(&body).unwrap(), unsupported.1);
             let seen = upstream.seen.lock().await;
-            assert_eq!(seen.len(), 2);
-            assert_eq!(seen[0].body["input"][0]["type"], "compaction");
-            let retried = seen[1].body["input"].as_array().unwrap();
-            assert_eq!(retried.len(), 5);
-            assert_eq!(retried[0]["content"][0]["text"], OPAQUE_COMPACTION_NOTE);
-            assert!(carries_reasoning(&seen[1]));
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].body["input"][0], compact);
+            assert!(carries_reasoning(&seen[0]));
         }
 
-        /// 措辞不在清单里的兜底只给 Codex 的原生 Responses 第三方：官方的压缩密文只在错误
-        /// 点名时才换，Grok Build 的压缩密文是 xAI 自己的。
         #[tokio::test]
-        async fn generic_compaction_retry_is_limited_to_codex_third_parties() {
+        async fn reasoning_repair_still_runs_when_native_compaction_is_present() {
+            let upstream = scripted_upstream(vec![blob_rejection(), response_ok()]).await;
+            let mut request = history_with_foreign_reasoning();
+            let compact =
+                json!({"type":"compaction","id":"cmp_keep","encrypted_content":"gAAAA-openai"});
+            request["input"]
+                .as_array_mut()
+                .unwrap()
+                .insert(0, compact.clone());
+            let result = forwarder(true)
+                .forward_with_retry(
+                    &AppType::Codex,
+                    http::Method::POST,
+                    "/responses",
+                    request,
+                    chatgpt_headers(),
+                    Extensions::new(),
+                    vec![provider(&upstream, "openai_responses")],
+                )
+                .await;
+            assert!(result.is_ok());
+            let seen = upstream.seen.lock().await;
+            assert_eq!(seen.len(), 2);
+            assert!(carries_reasoning(&seen[0]));
+            assert!(!carries_reasoning(&seen[1]));
+            assert_eq!(seen[0].body["input"][0], compact);
+            assert_eq!(seen[1].body["input"][0], compact);
+        }
+
+        /// Generic errors never trigger removal of opaque native compacted history.
+        #[tokio::test]
+        async fn generic_errors_do_not_rewrite_native_compaction_on_any_route() {
             let upstream = upstream().await;
             let third_party = provider(&upstream, "openai_responses");
             let mut official = third_party.clone();
@@ -7694,14 +7706,7 @@ mod tests {
                 )
             };
 
-            assert_eq!(
-                gate(AppType::Codex, &third_party),
-                Some(OpaqueStateRejection {
-                    reasoning: false,
-                    compaction: true,
-                    item_ids: false,
-                })
-            );
+            assert_eq!(gate(AppType::Codex, &third_party), None);
             assert_eq!(gate(AppType::Codex, &official), None);
             assert_eq!(gate(AppType::GrokBuild, &third_party), None);
         }
@@ -7722,7 +7727,7 @@ mod tests {
                 ..Default::default()
             });
             let request = json!({ "input": [
-                { "type": "compaction", "encrypted_content": "gAAAA-openai" }
+                { "type": "context_compaction" }
             ] });
             let unsupported = ProxyError::UpstreamError {
                 status: 400,

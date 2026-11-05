@@ -9,9 +9,8 @@
 //! 推理条目也可能不带密文、直接把思考原文放在 `content` 里（MiniMax），OpenAI 系上游同样不收，
 //! 按同一套规则去掉推理条目重发。
 //!
-//! 主要认上游自证的错误（错误码或固定措辞，取自 opencodex 的实测）。唯一的例外是 Codex 的
-//! 原生 Responses 第三方：它们对不认识的压缩条目怎么报错没法枚举，请求里带着看不出来源的
-//! 压缩条目时，400 / 422 也重试一次，只换掉压缩条目。
+//! 只按上游自证的错误修复状态。原生压缩内容始终保留；明确点名压缩内容的拒绝直接返回。
+//! 来源不同不代表无法读取，普通 400 / 422 不再触发原生压缩替换。
 //!
 //! 子 agent 的任务是例外：Codex 新版协作工具把主 agent 派的任务交给主 agent 那家后端加密，
 //! 放在请求末尾的 `agent_message` 里。去掉它子 agent 就没了任务，所以这一条不动；上游解不开时
@@ -19,8 +18,8 @@
 
 use super::error::ProxyError;
 use super::providers::codex_compaction::{
-    compaction_item_replay_text, is_compaction_item, is_unrecognized_compaction_item,
-    strip_mismatched_item_id, user_message_item,
+    compaction_item_replay_text, is_compaction_item, is_native_compaction_item,
+    is_unrecognized_compaction_item, strip_mismatched_item_id, user_message_item,
 };
 use super::types::RectifierConfig;
 use serde_json::{json, Value};
@@ -44,10 +43,7 @@ pub struct OpaqueStateRejection {
     /// 清掉别家回合留下的状态：去掉推理条目，函数输出、agent_message 里的加密片段换成
     /// 占位文字，前缀和条目类型对不上的 id 去掉。
     pub reasoning: bool,
-    /// 压缩条目换成文字（没有载荷的标记直接去掉）。压缩条目是整段早期对话的唯一载体：
-    /// - 官方：只有错误明确点名压缩时才换。第三方回合的压缩由 CC Switch 包装、发送前已经
-    ///   转成文字，到得了官方的压缩密文都是官方自己签发的。
-    /// - 第三方：一被拒就换。它收到的压缩密文多半是官方签发的（Stack 模式下切换过来）。
+    /// 展开 CCS 自己的摘要或移除无载荷标记；原生压缩密文不参与替换。
     pub compaction: bool,
     /// 条目 id 一律去掉，不只是格式不对的。Azure 的条目归属到签发它的资源，中转把后续请求
     /// 转到另一个资源时，格式合法的 `msg_…`、`fc_…` 也会被拒（只在上游点名这一点时才开）。
@@ -90,17 +86,22 @@ pub fn detect_opaque_state_rejection(
         let messages = payload.as_ref().map(error_messages).unwrap_or_default();
         let rejected = match *status {
             400..=499 => is_self_identified_rejection(body, payload.as_ref(), &messages, request),
-            // 函数输出里的加密片段解不开时 ChatGPT 后端回 502，只认这一种。
-            502 => is_encrypted_function_output_rejection(body, &messages),
+            // Superba also recognises explicit ciphertext errors carried by 502
+            // or status-less WS response.failed events; unrelated 5xx stay errors.
+            502 => is_self_identified_rejection(body, payload.as_ref(), &messages, request),
             _ => false,
         };
         if rejected {
+            if rejects_native_compaction(payload.as_ref(), &messages, request) {
+                return None;
+            }
             return Some(OpaqueStateRejection {
                 reasoning: true,
-                compaction: codex_third_party
-                    || messages
-                        .iter()
-                        .any(|message| message.contains("compaction")),
+                compaction: !super::codex_native::carries_native_compaction(request)
+                    && (codex_third_party
+                        || messages
+                            .iter()
+                            .any(|message| message.contains("compaction"))),
                 item_ids: messages
                     .iter()
                     .any(|message| is_foreign_resource_rejection(message)),
@@ -115,13 +116,61 @@ pub fn detect_opaque_state_rejection(
         .get("input")
         .and_then(Value::as_array)
         .is_some_and(|items| items.iter().any(is_unrecognized_compaction_item));
-    (codex_third_party && matches!(*status, 400 | 422) && unrecognized_compaction).then_some(
-        OpaqueStateRejection {
-            reasoning: false,
-            compaction: true,
-            item_ids: false,
-        },
-    )
+    (codex_third_party
+        && matches!(*status, 400 | 422)
+        && unrecognized_compaction
+        && !super::codex_native::carries_native_compaction(request))
+    .then_some(OpaqueStateRejection {
+        reasoning: false,
+        compaction: true,
+        item_ids: false,
+    })
+}
+
+/// Follow Superba's item-id/ciphertext matching, but preserve a rejected native
+/// compaction instead of replacing it with a note. `param` also identifies an
+/// exact input item on backends that do not include its id in the message.
+fn rejects_native_compaction(payload: Option<&Value>, messages: &[&str], request: &Value) -> bool {
+    let Some(items) = request["input"].as_array() else {
+        return false;
+    };
+    items.iter().enumerate().any(|(index, item)| {
+        if !is_native_compaction_item(item) {
+            return false;
+        }
+        let param = payload
+            .and_then(|value| {
+                value
+                    .pointer("/error/param")
+                    .or_else(|| value.pointer("/response/error/param"))
+            })
+            .and_then(Value::as_str);
+        let path = format!("input[{index}]");
+        if param.is_some_and(|param| param == path || param.starts_with(&format!("{path}."))) {
+            return true;
+        }
+        messages.iter().any(|message| {
+            if message.to_ascii_lowercase().contains("compaction") {
+                return true;
+            }
+            let Some(what) = message
+                .split_once("The encrypted content ")
+                .and_then(|(_, rest)| rest.split_once(" could not be verified"))
+                .map(|(what, _)| what)
+            else {
+                return false;
+            };
+            if let Some(id) = what.strip_prefix("for item ") {
+                return item["id"].as_str() == Some(id.trim());
+            }
+            what.split_once("...").is_some_and(|(head, tail)| {
+                !what.contains(' ')
+                    && item["encrypted_content"]
+                        .as_str()
+                        .is_some_and(|content| content.starts_with(head) && content.ends_with(tail))
+            })
+        })
+    })
 }
 
 /// 上游的错误体是不是自证验不了请求里的密文（错误码或固定措辞）。
@@ -204,6 +253,7 @@ pub fn unreadable_agent_task_error() -> ProxyError {
 fn error_messages(payload: &Value) -> Vec<&str> {
     [
         payload.pointer("/error/message"),
+        payload.pointer("/response/error/message"),
         payload.get("message"),
         payload.get("error"),
         payload.get("detail"),
@@ -221,7 +271,12 @@ fn is_encrypted_function_output_rejection(body: &str, messages: &[&str]) -> bool
 
 fn is_coded_rejection(payload: &Value) -> bool {
     // OpenAI：{"error":{"type":"invalid_request_error","code":"invalid_encrypted_content",...}}
-    if payload.pointer("/error/code").and_then(Value::as_str) == Some("invalid_encrypted_content") {
+    if payload
+        .pointer("/error/code")
+        .or_else(|| payload.pointer("/response/error/code"))
+        .and_then(Value::as_str)
+        == Some("invalid_encrypted_content")
+    {
         return true;
     }
     // xAI：{"code":"invalid-argument","error":"Could not decrypt the provided encrypted_content ..."}
@@ -287,8 +342,7 @@ fn carries_plaintext_reasoning(request: &Value) -> bool {
 ///   派给子 agent 的任务）不动。
 /// - 消息、函数调用的 id 不是 OpenAI 格式的（别家签发的）去掉，和推理条目同一个开关：两者都
 ///   来自别家回合，被拒时一次处理掉，一次重试就够。
-/// - 压缩条目换成文字（CC Switch 的摘要解回正文，别家的换成一句说明），没有载荷的
-///   标记直接去掉。
+/// - CCS 的摘要解回正文，没有载荷的标记直接去掉；原生压缩条目完整保留。
 ///
 /// 只动 `input` 里的条目，压缩触发等其他条目原样保留，交给转发时的常规处理。
 pub fn rectify_opaque_state(
@@ -303,6 +357,10 @@ pub fn rectify_opaque_state(
     let current = current_input_index(items);
     let mut rectified = Vec::with_capacity(items.len());
     for (index, mut item) in std::mem::take(items).into_iter().enumerate() {
+        if is_native_compaction_item(&item) {
+            rectified.push(item);
+            continue;
+        }
         let item_type = item
             .get("type")
             .and_then(Value::as_str)
@@ -379,9 +437,7 @@ fn replace_encrypted_parts(parts: Option<&mut Value>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proxy::providers::codex_compaction::{
-        encode_compaction_summary, OPAQUE_COMPACTION_NOTE, SUMMARY_PREFIX,
-    };
+    use crate::proxy::providers::codex_compaction::{encode_compaction_summary, SUMMARY_PREFIX};
 
     const OFFICIAL: bool = false;
     const THIRD_PARTY: bool = true;
@@ -589,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    fn third_party_unrecognized_compaction_retries_on_any_bad_request() {
+    fn native_compaction_does_not_trigger_a_generic_bad_request_retry() {
         let foreign = json!({ "input": [
             { "type": "message", "role": "user", "content": "hi" },
             { "type": "compaction", "encrypted_content": "gAAAA-openai" }
@@ -607,10 +663,7 @@ mod tests {
             body: Some("bad input".to_string()),
         };
 
-        assert_eq!(
-            detect_with(&unknown_type, &foreign, THIRD_PARTY),
-            Some(COMPACTION_ONLY)
-        );
+        assert_eq!(detect_with(&unknown_type, &foreign, THIRD_PARTY), None);
         assert_eq!(
             detect_with(&plain_text, &marker, THIRD_PARTY),
             Some(COMPACTION_ONLY)
@@ -668,16 +721,16 @@ mod tests {
     }
 
     #[test]
-    fn rectify_replaces_compaction_when_asked() {
+    fn rectify_expands_own_summary_but_preserves_native_compaction() {
         let mut body = mixed_history();
         body["input"].as_array_mut().unwrap().push(
             json!({ "type": "compaction", "encrypted_content": encode_compaction_summary("done") }),
         );
         let result = rectify_opaque_state(&mut body, ALL_STATE);
-        assert_eq!(result.replaced_compaction_items, 2);
+        assert_eq!(result.replaced_compaction_items, 1);
 
         let input = body["input"].as_array().unwrap();
-        assert_eq!(input[1]["content"][0]["text"], OPAQUE_COMPACTION_NOTE);
+        assert_eq!(input[1]["encrypted_content"], "gAAAA-openai");
         assert_eq!(
             input.last().unwrap()["content"][0]["text"],
             format!("{SUMMARY_PREFIX}\ndone")
@@ -693,13 +746,13 @@ mod tests {
             .insert(2, json!({ "type": "context_compaction" }));
         let result = rectify_opaque_state(&mut body, COMPACTION_ONLY);
         assert!(result.applied);
-        assert_eq!(result.replaced_compaction_items, 2);
+        assert_eq!(result.replaced_compaction_items, 1);
         assert_eq!(result.removed_reasoning_items, 0);
         assert_eq!(result.replaced_encrypted_parts, 0);
 
         let input = body["input"].as_array().unwrap();
         assert_eq!(input.len(), 7);
-        assert_eq!(input[1]["content"][0]["text"], OPAQUE_COMPACTION_NOTE);
+        assert_eq!(input[1]["encrypted_content"], "gAAAA-openai");
         assert!(input
             .iter()
             .all(|item| item["type"] != "context_compaction"));
@@ -877,5 +930,61 @@ mod tests {
         let result = rectify_opaque_state(&mut body, ALL_STATE);
         assert!(!result.applied);
         assert_eq!(body, before);
+    }
+    #[test]
+    fn native_compaction_survives_other_state_repairs_and_plain_errors() {
+        let compact =
+            json!({"type":"compaction","id":"cmp_keep","encrypted_content":"gAAAA-history-end"});
+        let request = json!({"input":[compact.clone(),{"type":"reasoning","id":"rs_foreign","summary":[],"encrypted_content":"gAAAA-reasoning"}]});
+        for status in [400, 422] {
+            assert_eq!(
+                detect_with(
+                    &upstream(status, json!({"error":{"message":"Bad request"}})),
+                    &request,
+                    THIRD_PARTY
+                ),
+                None
+            );
+        }
+        let error = upstream(
+            400,
+            json!({"error":{"code":"invalid_encrypted_content","message":"The encrypted content for item rs_foreign could not be verified"}}),
+        );
+        let rejection = detect_with(&error, &request, THIRD_PARTY).unwrap();
+        assert!(!rejection.compaction);
+        let mut repaired = request.clone();
+        assert!(rectify_opaque_state(&mut repaired, rejection).applied);
+        assert_eq!(repaired["input"], json!([compact.clone()]));
+        let mut forced = request;
+        rectify_opaque_state(
+            &mut forced,
+            OpaqueStateRejection {
+                reasoning: true,
+                compaction: true,
+                item_ids: true,
+            },
+        );
+        assert_eq!(forced["input"], json!([compact]));
+    }
+
+    #[test]
+    fn explicitly_rejected_native_compaction_returns_the_original_error() {
+        let request = json!({"input":[{"type":"compaction","id":"cmp_native","encrypted_content":"gAAAA-history-end"},{"type":"reasoning","id":"rs_keep","encrypted_content":"gAAAA-reasoning"}]});
+        for detail in [
+            json!({"code":"invalid_encrypted_content","message":"The encrypted content for item cmp_native could not be verified"}),
+            json!({"code":"invalid_encrypted_content","message":"The encrypted content gAAA...-end could not be verified"}),
+            json!({"code":"invalid_encrypted_content","message":"Compaction could not be decoded"}),
+            json!({"code":"invalid_encrypted_content","param":"input[0].encrypted_content","message":"Cannot decrypt item"}),
+        ] {
+            for body in [
+                json!({"error":detail.clone()}),
+                json!({"type":"response.failed","response":{"error":detail.clone()}}),
+            ] {
+                let error = upstream(400, body);
+                let before = error.to_string();
+                assert_eq!(detect_with(&error, &request, THIRD_PARTY), None);
+                assert_eq!(error.to_string(), before);
+            }
+        }
     }
 }

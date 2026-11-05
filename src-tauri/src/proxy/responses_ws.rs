@@ -25,8 +25,9 @@ use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 use tokio_tungstenite::{
     tungstenite::{
+        error::{CapacityError, Error as WsError},
         handshake::{client::generate_key, derive_accept_key},
-        protocol::{Role, WebSocketConfig},
+        protocol::{frame::coding::CloseCode, CloseFrame as UpCloseFrame, Role, WebSocketConfig},
         Message as UpMessage,
     },
     WebSocketStream,
@@ -46,13 +47,15 @@ use super::{
         AuthStrategy, CodexAdapter, ProviderAdapter,
     },
     response_processor::{log_usage_internal, sse_data_starts_output, usage_logging_enabled},
-    server::ProxyState,
+    server::{ProxyState, MAX_REQUEST_BODY_BYTES},
     usage::parser::TokenUsage,
     ProxyError,
 };
 use crate::{app_config::AppType, provider::Provider};
 
-const MAX_MESSAGE: usize = 64 * 1024 * 1024;
+const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
+const ANSWER_LIMIT: usize = 64 * 1024;
+const ANSWER_READ: Duration = Duration::from_secs(5);
 const FALLBACK_TTL: Duration = Duration::from_secs(60);
 const MAX_FALLBACKS: usize = 1024;
 
@@ -161,8 +164,8 @@ pub(super) async fn upgrade(state: ProxyState, request: axum::extract::Request) 
         Err(error) => return error.into_response(),
     };
     let shutdown = state.responses_ws.shutdown.subscribe();
-    ws.max_message_size(MAX_MESSAGE)
-        .max_frame_size(MAX_MESSAGE)
+    ws.max_message_size(MAX_REQUEST_BODY_BYTES)
+        .max_frame_size(MAX_REQUEST_BODY_BYTES.min(MAX_FRAME_BYTES))
         .on_upgrade(move |socket| session(state, parts.headers, parts.uri, key, shutdown, socket))
 }
 
@@ -185,6 +188,51 @@ async fn reply_error(socket: &mut WebSocket, status: u16, code: &str, message: &
         ))
         .await
         .is_ok()
+}
+
+fn upstream_error_event(error: &ProxyError, official: bool) -> Message {
+    let (status, body) = match error {
+        ProxyError::UpstreamError { status, body } => (*status, body.as_deref()),
+        ProxyError::AuthError(_) => (401, None),
+        _ => (502, None),
+    };
+    let status = if status == 401 && !official {
+        502
+    } else {
+        status
+    };
+    let error = body
+        .and_then(|body| serde_json::from_str::<Value>(body).ok())
+        .map(|value| value["error"].clone())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| {
+            json!({
+                "type": "upstream_error",
+                "code": "upstream_websocket_error",
+                "message": error.to_string(),
+            })
+        });
+    Message::Text(json!({"type": "error", "status": status, "error": error}).to_string())
+}
+
+fn too_big(error: &WsError) -> bool {
+    matches!(
+        error,
+        WsError::Capacity(CapacityError::MessageTooLong { .. })
+    )
+}
+
+async fn close_too_big(down: &mut WebSocket, up: Option<&mut WebSocketStream<reqwest::Upgraded>>) {
+    let _ = tokio::join!(down.send(close(1009, "message too big")), async {
+        if let Some(up) = up {
+            let _ = up
+                .send(UpMessage::Close(Some(UpCloseFrame {
+                    code: CloseCode::Size,
+                    reason: "message too big".into(),
+                })))
+                .await;
+        }
+    });
 }
 
 struct Turn {
@@ -252,7 +300,6 @@ async fn select_turn(
             ));
         }
     }
-    super::codex_native::validate(&ctx.provider, headers, &frame)?;
     let compaction = codex_compaction::is_compaction_request(&frame)
         && !official
         && !super::codex_native::native_compaction(
@@ -434,6 +481,38 @@ enum Connected {
     Http,
 }
 
+async fn handshake_error(mut response: reqwest::Response, provider: &Provider) -> ProxyError {
+    let status = response.status().as_u16();
+    let mut body = Vec::new();
+    let _ = tokio::time::timeout(ANSWER_READ, async {
+        while let Ok(Some(chunk)) = response.chunk().await {
+            let take = chunk.len().min(ANSWER_LIMIT - body.len());
+            body.extend_from_slice(&chunk[..take]);
+            if body.len() == ANSWER_LIMIT {
+                break;
+            }
+        }
+    })
+    .await;
+    let error = serde_json::from_slice::<Value>(&body)
+        .ok()
+        .map(|value| value["error"].clone())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| {
+            json!({
+                "type": "upstream_error",
+                "message": format!(
+                    "{} answered the WebSocket handshake with HTTP {}",
+                    provider.name, status
+                ),
+            })
+        });
+    ProxyError::UpstreamError {
+        status,
+        body: Some(json!({"error": error}).to_string()),
+    }
+}
+
 async fn connect(
     state: &ProxyState,
     headers: &HeaderMap,
@@ -513,12 +592,7 @@ async fn connect(
             false,
             matches!(response.status().as_u16(), 401 | 403),
         );
-        return Err(ProxyError::UpstreamError {
-            status: response.status().as_u16(),
-            body: Some(
-                "Responses WebSocket handshake was rejected by the selected upstream".into(),
-            ),
-        });
+        return Err(handshake_error(response, &turn.ctx.provider).await);
     }
     if response
         .headers()
@@ -549,8 +623,8 @@ async fn connect(
         true,
     );
     let config = WebSocketConfig {
-        max_message_size: Some(MAX_MESSAGE),
-        max_frame_size: Some(MAX_MESSAGE),
+        max_message_size: Some(MAX_REQUEST_BODY_BYTES),
+        max_frame_size: Some(MAX_REQUEST_BODY_BYTES.min(MAX_FRAME_BYTES)),
         ..WebSocketConfig::default()
     };
     log::info!(
@@ -749,6 +823,7 @@ async fn session(
     let mut upstream: Option<Box<WebSocketStream<reqwest::Upgraded>>> = None;
     let mut pinned_route = None;
     let mut pending = VecDeque::<Pending>::new();
+    let mut oversized = false;
     let mut capability_observed_at = Instant::now();
     let mut last_ws: Option<(Provider, String)> = None;
     loop {
@@ -761,7 +836,14 @@ async fn session(
                 let text = match message {
                     Some(Ok(Message::Text(text))) => text,
                     Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
-                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Err(error)) => {
+                        if error.into_inner().downcast_ref::<WsError>().is_some_and(too_big) {
+                            oversized = true;
+                            close_too_big(&mut down, upstream.as_deref_mut()).await;
+                        }
+                        break;
+                    }
                     Some(Ok(Message::Binary(_))) => {
                         let _ = down.send(close(1003, "Responses requires JSON text frames")).await;
                         break;
@@ -778,10 +860,6 @@ async fn session(
                     if let Some(up) = &mut upstream {
                         if up.send(UpMessage::Text(text)).await.is_err() { break; }
                     } else if !reply_error(&mut down, 400, "response_create_required", "Send response.create before other events").await { break; }
-                    continue;
-                }
-                if pending.len() >= 8 {
-                    if !reply_error(&mut down, 429, "too_many_inflight_responses", "Too many unfinished responses on this connection").await { break; }
                     continue;
                 }
                 let turn = match select_turn(&state, &headers, frame).await {
@@ -826,16 +904,7 @@ async fn session(
                         }
                         Err(error) => {
                             super::codex_capabilities::ws(&state, &turn.ctx.provider, &headers, turn.frame["model"].as_str().unwrap_or_default(), false, false);
-                            let status = match error {
-                                // This key belongs to the selected third party,
-                                // not the official login carried by the client.
-                                ProxyError::UpstreamError { status: 401, .. } if !turn.official => 502,
-                                ProxyError::UpstreamError { status, .. } => status,
-                                ProxyError::AuthError(_) if !turn.official => 502,
-                                ProxyError::AuthError(_) => 401,
-                                _ => 502,
-                            };
-                            let _ = reply_error(&mut down, status, "upstream_websocket_error", &error.to_string()).await;
+                            let _ = down.send(upstream_error_event(&error, turn.official)).await;
                             let _ = down.send(close(1011, "Upstream WebSocket unavailable")).await;
                             break;
                         }
@@ -888,9 +957,10 @@ async fn session(
                                 if head.first_token_ms.is_none()
                                     && super::opaque_state_rectifier::detect_opaque_state_rejection(
                                         &error, &head.turn.ctx.rectifier_config, &head.turn.frame, !head.turn.official
-                                    ).is_some_and(|rejection| !(rejection.compaction
-                                        && super::codex_native::carries_native_compaction(&head.turn.frame)
-                                        && super::codex_native::native_compaction(&head.turn.ctx.provider, head.turn.frame["model"].as_str().unwrap_or_default())))
+                                    ).is_some_and(|rejection| {
+                                        let mut repaired = head.turn.frame.clone();
+                                        super::opaque_state_rectifier::rectify_opaque_state(&mut repaired, rejection).applied
+                                    })
                                 {
                                     fallback(&state, key.as_deref(), &mut down).await;
                                     break;
@@ -928,7 +998,17 @@ async fn session(
                         if down.send(Message::Binary(bytes)).await.is_err() { break; }
                     }
                     Some(Ok(UpMessage::Frame(_))) => {}
-                    Some(Err(_)) | None => {
+                    Some(Err(error)) => {
+                        if too_big(&error) {
+                            oversized = true;
+                            close_too_big(&mut down, upstream.as_deref_mut()).await;
+                        }
+                        if let Some((provider, model)) = &last_ws {
+                            super::codex_capabilities::ws(&state, provider, &headers, model, false, false);
+                        }
+                        break;
+                    }
+                    None => {
                         if let Some((provider, model)) = &last_ws {
                             super::codex_capabilities::ws(&state, provider, &headers, model, false, false);
                         }
@@ -939,7 +1019,7 @@ async fn session(
         }
     }
     for unfinished in pending {
-        unfinished.finish(&state, &headers, None, 499);
+        unfinished.finish(&state, &headers, None, if oversized { 502 } else { 499 });
     }
     if let Some(up) = &mut upstream {
         let _ = tokio::time::timeout(Duration::from_secs(1), up.close()).await;
