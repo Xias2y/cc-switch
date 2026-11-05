@@ -11,24 +11,20 @@ fn provider(base: &str) -> Provider {
 }
 
 #[test]
-fn native_support_is_scoped_to_verified_hosts_models_and_explicit_overrides() {
-    assert!(native_compaction(
-        &provider("https://api.kbsfdxc.net"),
-        "gpt-6.1-sol"
-    ));
-    assert!(!native_compaction(
-        &provider("https://api.kbsfdxc.net"),
-        "kimi-k3"
-    ));
-    assert!(!native_compaction(
-        &provider("https://api.kbsfdxc.net.example.org"),
-        "gpt-6.1-sol"
-    ));
-    assert!(!native_compaction(
-        &provider("https://example.org"),
-        "gpt-6.1-sol"
-    ));
-    let mut custom = provider("https://example.org");
+fn native_support_is_scoped_to_provider_name_models_and_explicit_overrides() {
+    let mut named = provider("https://relay.example.org/v1");
+    for name in ["krill", "Krill", "KRILL", "kRiLl"] {
+        named.name = name.into();
+        assert!(native_compaction(&named, "gpt-6.1-sol"));
+        assert!(zstd_enabled(&named));
+    }
+    assert!(!native_compaction(&named, "kimi-k3"));
+    let mut custom = provider("https://api.kbsfdxc.net");
+    for name in ["Other", "my-krill", "krill-backup"] {
+        custom.name = name.into();
+        assert!(!native_compaction(&custom, "gpt-6.1-sol"));
+        assert!(!zstd_enabled(&custom));
+    }
     custom.meta = Some(ProviderMeta {
         codex_native_compaction: Some(true),
         ..Default::default()
@@ -51,7 +47,8 @@ fn native_trigger_tools_and_format_are_preserved_and_legacy_envelopes_still_expa
     prepare(&native, &mut request);
     assert_eq!(request["input"][1]["type"], "compaction_trigger");
     assert!(request["input"][0].to_string().contains("legacy summary"));
-    let ordinary = provider("https://example.org");
+    let mut ordinary = provider("https://example.org");
+    ordinary.name = "Other".into();
     let mut bridge = before;
     prepare(&ordinary, &mut bridge);
     assert_eq!(bridge["tool_choice"], "none");

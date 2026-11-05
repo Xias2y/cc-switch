@@ -2,7 +2,7 @@
 
 ## 中文
 
-- 标题固定为 `CC Switch For Krill 0.0.N`，不附加描述或破折号后缀。
+- 标题固定为 `CC Switch For Krill <版本号>`，不附加描述或破折号后缀。
 - 分支定位、作者和上游版本介绍仅在首版说明，后续不重复。
 
 - 本分支的 GitHub Release 标题与说明只使用中文和英文，中文在前，英文在后。
@@ -12,7 +12,7 @@
 
 ## English
 
-- Use the exact title `CC Switch For Krill 0.0.N` without a descriptive suffix.
+- Use the exact title `CC Switch For Krill <version>` without a descriptive suffix.
 - Introduce the fork, publisher and upstream base in the first release only.
 
 - Use only Chinese and English in this fork's GitHub Release titles and descriptions,

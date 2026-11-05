@@ -31,4 +31,7 @@ may remain in the local cache, but it is not displayed or actively probed.
 `0.0.2` added WS / CMP labels and an isolated CMP probe. `0.0.3` removed that probe.
 `0.0.4` hides CMP, removes the WS tooltip and uses actual HTTP/WS traffic without
 the former WS-success grace period. Backend updater versions retain the existing
-`4.0.26-krill.N` sequence; GitHub Release titles use `CC Switch For Krill 0.0.N`.
+`4.0.26-krill.N` sequence through the local 0.0.4 build. Stable release
+`CC Switch For Krill 0.1.0` uses `0.1.0` consistently for the app, updater and
+release. Its fingerprint excludes hydrated candidate endpoints and sorts JSON
+keys so request and provider-list reads match the same transport evidence.

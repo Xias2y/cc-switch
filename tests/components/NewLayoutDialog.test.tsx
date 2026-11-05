@@ -19,7 +19,7 @@ vi.mock("@/lib/query", () => ({
   useSettingsQuery: () => ({ data: mocks.settings }),
 }));
 vi.mock("@tauri-apps/api/app", () => ({
-  getVersion: async () => "4.0.0",
+  getVersion: async () => "4.0.26-krill.3",
 }));
 
 import { NewLayoutDialog } from "@/components/shell/NewLayoutDialog";
@@ -66,7 +66,7 @@ describe("NewLayoutDialog", () => {
     expect(mocks.save).toHaveBeenCalledWith(
       expect.objectContaining({
         newLayoutNoticeConfirmed: true,
-        whatsNewSeenVersion: "4.0.0",
+        whatsNewSeenVersion: "4.0.26-krill.3",
       }),
     );
   });
@@ -80,7 +80,7 @@ describe("NewLayoutDialog", () => {
     );
     await waitFor(() =>
       expect(mocks.openExternal).toHaveBeenCalledWith(
-        "https://github.com/farion1231/cc-switch/releases/tag/v4.0.0",
+        "https://github.com/Xias2y/cc-switch/releases/tag/krill-v4.0.26-3",
       ),
     );
     await waitFor(() =>

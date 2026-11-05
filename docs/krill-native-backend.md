@@ -8,9 +8,11 @@ contributors. The original MIT license is included in
 [`licenses/Superba-MIT.txt`](../licenses/Superba-MIT.txt).
 
 The implementation uses CC Switch's own provider selection, authentication,
-HTTP clients and usage logging. The native capability defaults apply to GPT
-models on the known Krill origins; other providers keep the existing summary
-bridge. Backend metadata overrides `codexNativeCompaction` and
+HTTP clients and usage logging. Krill is identified by an exact,
+case-insensitive provider name match (`krill`, `Krill` or `KRILL`), independent
+of the API domain. Native compaction defaults apply to GPT models on these
+providers; other providers keep the existing summary bridge. Backend metadata
+overrides `codexNativeCompaction` and
 `codexRequestZstd` are independent. No new UI controls are introduced here.
 
 Native compaction items are forwarded as issued by the upstream. Existing CCS

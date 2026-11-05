@@ -29,22 +29,7 @@ const MAX_OWNERS: usize = 20_000;
 const ZSTD_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 pub(super) fn krill(provider: &Provider) -> bool {
-    CodexAdapter::new()
-        .extract_base_url(provider)
-        .ok()
-        .and_then(|base| url::Url::parse(&base).ok())
-        .and_then(|url| url.host_str().map(str::to_owned))
-        .is_some_and(|host| {
-            matches!(
-                host.as_str(),
-                "api.kbsfdxc.net"
-                    | "api-slb.kbsfdxc.net"
-                    | "api.kbsfdxc.com"
-                    | "api.krill-code.net"
-                    | "api-slb.krill-code.net"
-                    | "api.cdn-krill-ai.com"
-            )
-        })
+    provider.name.eq_ignore_ascii_case("krill")
 }
 
 pub(crate) fn native_compaction(provider: &Provider, model: &str) -> bool {

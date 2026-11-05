@@ -1,0 +1,33 @@
+{
+  "version": "0.1.0",
+  "items": [
+    {
+      "type": "new",
+      "zh": "0.1.0 稳定版：聚合支持官方与 Krill 原生 WS、工具调用和预热",
+      "zh-TW": "0.1.0 穩定版：聚合支援官方與 Krill 原生 WS、工具呼叫和預熱",
+      "en": "0.1.0 stable: native official/Krill WS, tool calls and prewarming in aggregation",
+      "ja": "0.1.0 安定版：公式と Krill の集約で WS・ツール呼び出し・事前接続に対応"
+    },
+    {
+      "type": "improve",
+      "zh": "保留 Krill 原生上下文压缩，校验压缩历史来源",
+      "zh-TW": "保留 Krill 原生上下文壓縮，校驗壓縮歷史來源",
+      "en": "Preserve native Krill context compaction and protect the source of compacted history",
+      "ja": "Krill のネイティブ文脈圧縮と圧縮履歴の出所を保護"
+    },
+    {
+      "type": "fix",
+      "zh": "WS 标签仅观察真实流量，修正候选端点状态匹配",
+      "zh-TW": "WS 標籤僅觀察真實流量，修正候選端點狀態匹配",
+      "en": "Observe actual traffic for WS status and fix matching with candidate endpoints",
+      "ja": "実通信だけで WS 状態を表示し、候補エンドポイントの不一致を修正"
+    },
+    {
+      "type": "improve",
+      "zh": "HTTP 自动压缩与 WS 回退，更新入口指向本分支",
+      "zh-TW": "HTTP 自動壓縮與 WS 回退，更新入口指向本分支",
+      "en": "Automatic HTTP compression and WS fallback, with update links to this fork",
+      "ja": "HTTP 圧縮と WS フォールバックに対応し、更新リンクを本フォークへ統一"
+    }
+  ]
+}

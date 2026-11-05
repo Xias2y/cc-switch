@@ -909,6 +909,12 @@ pub fn run() {
                 Err(e) => log::warn!("✗ Failed to seed official providers: {e}"),
             }
 
+            if !has_db && !has_json {
+                if let Err(e) = app_state.db.init_default_krill_provider() {
+                    log::warn!("Failed to seed default Krill provider: {e}");
+                }
+            }
+
             {
                 let db_for_codex_history_migration = app_state.db.clone();
                 tauri::async_runtime::spawn_blocking(move || {

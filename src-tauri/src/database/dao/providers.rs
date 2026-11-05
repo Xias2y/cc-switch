@@ -856,6 +856,28 @@ impl Database {
         Ok(inserted)
     }
 
+    /// 仅供全新安装调用，沿用前端自定义 Codex 供应商的默认值。
+    pub fn init_default_krill_provider(&self) -> Result<(), AppError> {
+        let mut provider = Provider::with_id(
+            uuid::Uuid::new_v4().to_string(),
+            "krill".to_string(),
+            serde_json::json!({
+                "auth": {"OPENAI_API_KEY": ""},
+                "config": "model_provider = \"custom\"\nmodel = \"gpt-5.6-sol\"\nmodel_reasoning_effort = \"high\"\ndisable_response_storage = true\n\n[model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\nrequires_openai_auth = true"
+            }),
+            None,
+        );
+        provider.meta = Some(crate::provider::ProviderMeta {
+            common_config_enabled: Some(true),
+            endpoint_auto_select: Some(true),
+            api_format: Some("openai_responses".to_string()),
+            ..Default::default()
+        });
+        provider.created_at = Some(chrono::Utc::now().timestamp_millis());
+        provider.sort_index = Some(self.next_sort_index_for_app("codex")?);
+        self.save_provider("codex", &provider)
+    }
+
     /// 按 id 兜底插入单条 official seed（仅当目标表中该 id 不存在时插入）。
     ///
     /// 与 `init_default_official_providers` 不同：

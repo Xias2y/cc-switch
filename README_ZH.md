@@ -2,7 +2,7 @@
 
 # CC Switch
 
-> **专门支持 Krill 的定制分支，基于上游 v4.0.25。** 为 Codex 聚合模式接入官方账号与 Krill 的原生 WebSocket、上下文压缩及 HTTP zstd。[下载本分支](https://github.com/Xias2y/cc-switch/releases) · [实现与限制](docs/krill-native-backend.md) · [WS / CMP 可用性标志](docs/krill-capability-badges.md)。
+> **专门支持 Krill 的定制分支，基于上游 v4.0.25。** 为 Codex 聚合模式接入官方账号与 Krill 的原生 WebSocket、上下文压缩及 HTTP zstd。[下载本分支](https://github.com/Xias2y/cc-switch/releases) · [实现与限制](docs/krill-native-backend.md) · [被动 WS 状态标签](docs/krill-capability-badges.md)。
 >
 > 感谢 **[@krill-lab/Superba](https://github.com/krill-lab/superba)** 提供参考实现。本分支独立维护，并非 CC Switch 上游官方发行版。
 

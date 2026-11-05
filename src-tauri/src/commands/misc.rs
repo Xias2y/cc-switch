@@ -25,6 +25,8 @@ use std::os::windows::process::CommandExt;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+const RELEASES_URL: &str = "https://github.com/Xias2y/cc-switch/releases";
+
 /// 打开外部链接
 /// 外部链接白名单：只允许 `http:` / `https:` / `mailto:`。
 /// 不带协议的裸域名（如 `example.com/docs`）按旧行为补 `https://`；
@@ -78,41 +80,33 @@ pub async fn copy_text_to_clipboard(text: String) -> Result<bool, String> {
 pub async fn check_for_updates(handle: AppHandle) -> Result<bool, String> {
     handle
         .opener()
-        .open_url(
-            "https://github.com/farion1231/cc-switch/releases/latest",
-            None::<String>,
-        )
+        .open_url(format!("{RELEASES_URL}/latest"), None::<String>)
         .map_err(|e| format!("打开更新页面失败: {e}"))?;
 
     Ok(true)
 }
 
-/// 便携版新版本压缩包的下载地址，命名与 release.yml 的「Prepare Windows Assets」一致：
-/// `CC-Switch-v<版本>-Windows[-arm64]-Portable.zip`。版本号不像版本号时返回 None。
-fn portable_zip_url(version: &str, arm64: bool) -> Option<String> {
-    let version = version.trim().trim_start_matches('v');
-    let looks_like_version = version.starts_with(|c: char| c.is_ascii_digit())
-        && version
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'));
-    if !looks_like_version {
-        return None;
+/// 本分支的发布页；便携版从实际附件中选择下载，不假定一定发布了 ZIP。
+fn release_page_url(version: &str) -> String {
+    let stable = Regex::new(r"^v?(0\.\d+\.\d+)$").expect("valid stable version pattern");
+    if let Some(parts) = stable.captures(version.trim()) {
+        return format!("{RELEASES_URL}/tag/krill-v{}", &parts[1]);
     }
-    let suffix = if arm64 { "-arm64" } else { "" };
-    Some(format!(
-        "https://github.com/farion1231/cc-switch/releases/download/v{version}/CC-Switch-v{version}-Windows{suffix}-Portable.zip"
-    ))
+    let pattern =
+        Regex::new(r"^v?(\d+\.\d+\.\d+)-krill\.(\d+)$").expect("valid release version pattern");
+    match pattern.captures(version.trim()) {
+        Some(parts) => format!("{RELEASES_URL}/tag/krill-v{}-{}", &parts[1], &parts[2]),
+        None => RELEASES_URL.to_string(),
+    }
 }
 
-/// 便携版更新：直接下载对应架构的新版压缩包（解压覆盖即可，数据在 ~/.cc-switch 不受影响）。
-/// 不做原地替换自身 exe：那样很容易被杀毒软件当成病毒拦截。
+/// 便携版更新：打开本分支对应版本的发布页，供用户选择实际可用的附件。
 #[tauri::command]
 pub async fn open_portable_update_download(
     handle: AppHandle,
     version: String,
 ) -> Result<bool, String> {
-    let url = portable_zip_url(&version, cfg!(target_arch = "aarch64"))
-        .unwrap_or_else(|| "https://github.com/farion1231/cc-switch/releases/latest".to_string());
+    let url = release_page_url(&version);
     handle
         .opener()
         .open_url(url, None::<String>)
@@ -6955,17 +6949,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn portable_zip_url_matches_release_asset_names() {
+    fn release_page_url_matches_fork_tags() {
         assert_eq!(
-            portable_zip_url("4.0.12", false).as_deref(),
-            Some("https://github.com/farion1231/cc-switch/releases/download/v4.0.12/CC-Switch-v4.0.12-Windows-Portable.zip")
+            release_page_url("0.1.0"),
+            "https://github.com/Xias2y/cc-switch/releases/tag/krill-v0.1.0"
         );
         assert_eq!(
-            portable_zip_url("v4.1.0-beta.1", true).as_deref(),
-            Some("https://github.com/farion1231/cc-switch/releases/download/v4.1.0-beta.1/CC-Switch-v4.1.0-beta.1-Windows-arm64-Portable.zip")
+            release_page_url("4.0.26-krill.3"),
+            "https://github.com/Xias2y/cc-switch/releases/tag/krill-v4.0.26-3"
         );
-        for bad in ["", "v", "latest", "4.0/../x", "4.0.0?x=1"] {
-            assert!(portable_zip_url(bad, false).is_none(), "{bad}");
+        assert_eq!(
+            release_page_url(" v4.0.26-krill.12 "),
+            "https://github.com/Xias2y/cc-switch/releases/tag/krill-v4.0.26-12"
+        );
+        for other in [
+            "",
+            "v",
+            "latest",
+            "4.0.12",
+            "4.0/../x",
+            "4.0.26-krill.3?x=1",
+        ] {
+            assert_eq!(release_page_url(other), RELEASES_URL, "{other}");
         }
     }
 

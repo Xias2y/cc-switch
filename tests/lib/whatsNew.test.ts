@@ -87,10 +87,21 @@ describe("language and links", () => {
     expect(resolveWhatsNewLanguage("fr")).toBe("en");
   });
 
-  it("links to the website changelog, Traditional Chinese uses the zh pages", () => {
-    expect(changelogUrl("en", "4.0.2")).toBe(
-      "https://ccswitch.io/en/changelog/4.0.2",
+  it("links to fork tags in every language and falls back to the fork release list", () => {
+    expect(changelogUrl("zh", "0.1.0")).toBe(
+      "https://github.com/Xias2y/cc-switch/releases/tag/krill-v0.1.0",
     );
-    expect(changelogUrl("zh-TW")).toBe("https://ccswitch.io/zh/changelog");
+    expect(changelogUrl("en", "4.0.26-krill.3")).toBe(
+      "https://github.com/Xias2y/cc-switch/releases/tag/krill-v4.0.26-3",
+    );
+    expect(changelogUrl("zh", " v4.0.26-krill.12 ")).toBe(
+      "https://github.com/Xias2y/cc-switch/releases/tag/krill-v4.0.26-12",
+    );
+    expect(changelogUrl("en", "4.0.2")).toBe(
+      "https://github.com/Xias2y/cc-switch/releases",
+    );
+    expect(changelogUrl("zh-TW")).toBe(
+      "https://github.com/Xias2y/cc-switch/releases",
+    );
   });
 });

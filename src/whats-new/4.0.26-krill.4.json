@@ -10,10 +10,24 @@
     },
     {
       "type": "fix",
-      "zh": "按实际 WS / HTTP 流量更新颜色，不额外请求或消耗 token",
-      "zh-TW": "按實際 WS / HTTP 流量更新顏色，不額外請求或消耗 token",
-      "en": "Track actual WS / HTTP traffic without extra requests or tokens",
-      "ja": "追加リクエストやトークンなしで実際の WS / HTTP 通信を反映"
+      "zh": "修正候选端点导致 WS 不亮，不额外请求或消耗 token",
+      "zh-TW": "修正候選端點導致 WS 不亮，不額外請求或消耗 token",
+      "en": "Fix WS status matching with candidate endpoints; no extra requests or tokens",
+      "ja": "候補エンドポイントによる WS 状態の不一致を修正。追加トークンなし"
+    },
+    {
+      "type": "improve",
+      "zh": "Krill 按供应商名称识别，不再依赖固定 API 域名",
+      "zh-TW": "Krill 按供應商名稱識別，不再依賴固定 API 網域",
+      "en": "Identify Krill by provider name without depending on fixed API domains",
+      "ja": "固定 API ドメインに依存せずプロバイダー名で Krill を識別"
+    },
+    {
+      "type": "new",
+      "zh": "全新安装预置 Krill 空白配置，已有配置保持不变",
+      "zh-TW": "全新安裝預置 Krill 空白配置，已有配置保持不變",
+      "en": "Fresh installs include a blank Krill provider; existing configurations are preserved",
+      "ja": "新規インストールに空の Krill 設定を追加し、既存設定を維持"
     }
   ]
 }

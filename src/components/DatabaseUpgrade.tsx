@@ -13,8 +13,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-
-const RELEASES_URL = "https://github.com/farion1231/cc-switch/releases";
+import { RELEASES_URL } from "@/lib/releaseLinks";
 
 interface DatabaseUpgradeProps {
   payload: {

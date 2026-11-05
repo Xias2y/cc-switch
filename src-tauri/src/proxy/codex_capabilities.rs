@@ -111,11 +111,16 @@ impl Cache {
 }
 
 fn config(provider: &Provider) -> String {
-    sha256_hex(
-        json!([provider.settings_config, provider.category, provider.meta])
-            .to_string()
-            .as_bytes(),
-    )
+    // List queries hydrate candidate endpoints, while direct route lookups do
+    // not. These presentation fields must not change the transport identity.
+    let mut meta = provider.meta.clone();
+    if let Some(meta) = &mut meta {
+        meta.custom_endpoints.clear();
+    }
+    let mut value = json!([provider.settings_config, provider.category, meta]);
+    // Metadata can contain HashMaps; equivalent settings need the same hash.
+    value.sort_all_objects();
+    sha256_hex(value.to_string().as_bytes())
 }
 
 fn account(provider: &Provider, headers: &HeaderMap) -> String {
