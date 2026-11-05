@@ -111,6 +111,40 @@ fn set_windows_app_user_model_id(app: &tauri::AppHandle) {
 }
 
 #[cfg(target_os = "windows")]
+fn set_windows_taskbar_icon(window: &tauri::WebviewWindow) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, LoadImageW, SendMessageW, GWLP_HINSTANCE, ICON_BIG, IMAGE_ICON,
+        LR_DEFAULTSIZE, LR_SHARED, WM_SETICON,
+    };
+
+    let Ok(hwnd) = window.hwnd() else {
+        log::warn!("Failed to get the main window handle for the taskbar icon");
+        return;
+    };
+    // Tauri/tao sets ICON_SMALL only. Load the bundled application icon (32512) for ICON_BIG.
+    // LR_SHARED keeps the resource handle alive without transferring ownership to the window.
+    unsafe {
+        let instance = GetWindowLongPtrW(hwnd.0, GWLP_HINSTANCE) as _;
+        let icon = LoadImageW(
+            instance,
+            32512usize as *const u16,
+            IMAGE_ICON,
+            0,
+            0,
+            LR_DEFAULTSIZE | LR_SHARED,
+        );
+        if icon.is_null() {
+            log::warn!(
+                "Failed to load the bundled taskbar icon: {}",
+                std::io::Error::last_os_error()
+            );
+        } else {
+            SendMessageW(hwnd.0, WM_SETICON, ICON_BIG as usize, icon as isize);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn disable_windows_general_autofill<R: tauri::Runtime>(webview: &tauri::Webview<R>) {
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings4;
     use windows::core::Interface;
@@ -1537,6 +1571,7 @@ pub fn run() {
                 // Windows：一律去掉系统标题栏，用页头里的应用内窗口按钮；保留阴影和边缘缩放
                 #[cfg(target_os = "windows")]
                 {
+                    set_windows_taskbar_icon(&window);
                     let _ = window.set_decorations(false);
                     let _ = window.set_shadow(true);
                 }
