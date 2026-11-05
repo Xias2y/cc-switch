@@ -16,7 +16,8 @@ overrides `codexNativeCompaction` and
 `codexRequestZstd` are independent. No new UI controls are introduced here.
 
 Native compaction items are forwarded as issued by the upstream. Existing CCS
-summary envelopes still expand into text for backward compatibility. Only
+summary envelopes remain intact on strict routes from 0.1.3; other routes
+still expand them for compatibility. Only
 fingerprints, provider identifiers and credential fingerprints are stored in
 the device-local `codex-compaction-owners.json`; no ciphertext or tokens are
 stored. Since 0.1.1, these records are diagnostic only: provider/account/key
@@ -27,12 +28,12 @@ maker or successful reader remains recorded; later readers do not replace it.
 A native compaction rejection does not erase earlier context or replace it with
 a placeholder. A rejection naming a native compaction (by item id, ciphertext
 ends, exact input parameter or compaction wording) is passed through. Other
-self-identified encrypted-state errors retain CCS's existing single retry and
-current-sub-agent-task protection. Native compaction items, including their ids,
-remain unchanged during that repair. Generic 400/422 errors do not trigger a
-native-compaction rewrite. WS uses the same policy and returns to the HTTP
-repair path only when another state item can actually be repaired, before any
-productive output reaches the client. Legacy CCS summaries still expand normally.
+self-identified encrypted-state errors also pass through on strict official/Krill
+native routes from 0.1.3: no reasoning deletion, encrypted-part omission or
+placeholder retry occurs. HTTP and WS share this rule; strict response events
+also bypass late-argument repair. Other providers retain their existing repair
+and legacy-summary compatibility paths. See [strict native passthrough](strict-native-passthrough.md)
+for request override protection and matching native catalog markers.
 This allows an attempt at cross-provider use; it does not guarantee that every
 upstream can decrypt every imported history.
 

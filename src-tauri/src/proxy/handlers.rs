@@ -1224,7 +1224,9 @@ async fn handle_responses_for_app(
         .await;
     }
 
-    if super::providers::provider_needs_responses_late_arguments_repair(&ctx.provider) {
+    if !super::codex_native::strict_passthrough(&ctx.provider, &json!({"model": capability_model}))
+        && super::providers::provider_needs_responses_late_arguments_repair(&ctx.provider)
+    {
         return handle_codex_late_arguments_repair(
             response,
             &ctx,

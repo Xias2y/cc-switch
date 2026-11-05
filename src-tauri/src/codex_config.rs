@@ -2617,7 +2617,24 @@ pub(crate) fn plan_codex_stack_catalog(
             let Some(obj) = entry.as_object_mut() else {
                 continue;
             };
-            join_stack_history(obj);
+            let native_history = member.provider_name.eq_ignore_ascii_case("krill")
+                && member.row.profile == CodexCatalogToolProfile::NativeResponses
+                && obj
+                    .get("slug")
+                    .and_then(Value::as_str)
+                    .is_some_and(|model| {
+                        model.starts_with("gpt-")
+                            && obj.get("comp_hash").is_some()
+                            && entries.iter().any(|native| {
+                                native["slug"].as_str() == Some(model)
+                                    && ["comp_hash", "tool_mode", "multi_agent_version"]
+                                        .iter()
+                                        .all(|key| native.get(*key) == obj.get(*key))
+                            })
+                    });
+            if !native_history {
+                join_stack_history(obj);
+            }
             let Some(model) = obj.get("slug").and_then(Value::as_str).map(str::to_string) else {
                 continue;
             };
@@ -5694,6 +5711,47 @@ wire_api = "responses"
             );
         }
         assert!(normalize_codex_native_rows(Vec::new()).is_none());
+    }
+
+    #[test]
+    fn strict_krill_shares_only_matching_official_native_history_marker() {
+        let settings = json!({"modelCatalog":{"models":[{"model":"gpt-6-sol"}]}});
+        for profile in [
+            CodexCatalogToolProfile::NativeResponses,
+            CodexCatalogToolProfile::ProxyChat,
+        ] {
+            let models = with_official_models(official_gpt_rows(), || {
+                plan_codex_stack_catalog(
+                    CodexStackRoute::Official {
+                        native: official_gpt_rows(),
+                        config_text: "",
+                    },
+                    &[CodexStackCatalogMember {
+                        key: "krill",
+                        provider_name: "Krill",
+                        row: CodexCatalogRow {
+                            settings: &settings,
+                            config_text: "model = \"gpt-6-sol\"\n",
+                            profile,
+                        },
+                    }],
+                    false,
+                )
+                .unwrap()
+            });
+            let rows = models["models"].as_array().unwrap();
+            let official = rows.iter().find(|r| r["slug"] == "gpt-6-sol").unwrap();
+            let krill = rows
+                .iter()
+                .find(|r| r["slug"] == "ccs-krill/gpt-6-sol")
+                .unwrap();
+            if profile == CodexCatalogToolProfile::NativeResponses {
+                assert_eq!(krill["comp_hash"], official["comp_hash"]);
+                assert_eq!(krill["tool_mode"], official["tool_mode"]);
+            } else {
+                assert_ne!(krill["comp_hash"], official["comp_hash"]);
+            }
+        }
     }
 
     #[test]

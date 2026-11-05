@@ -481,6 +481,8 @@ impl RequestForwarder {
         error: &ProxyError,
     ) -> Option<OpaqueStateRejection> {
         if already_retried
+            || (matches!(app_type, AppType::Codex)
+                && super::codex_native::strict_passthrough(provider, request))
             || !matches!(app_type, AppType::Codex | AppType::GrokBuild)
             || codex_upstream_format != Some(CodexUpstreamFormat::NativeResponses)
         {
@@ -951,12 +953,15 @@ impl RequestForwarder {
                     );
                     let mut signature_rectifier_non_retryable_client_error = false;
 
-                    if self.media_retry_should_trigger(
-                        adapter.name(),
-                        media_rectifier_retried,
-                        &provider_body,
-                        &e,
-                    ) {
+                    if !(matches!(app_type, AppType::Codex)
+                        && super::codex_native::strict_passthrough(provider, &provider_body))
+                        && self.media_retry_should_trigger(
+                            adapter.name(),
+                            media_rectifier_retried,
+                            &provider_body,
+                            &e,
+                        )
+                    {
                         let mut media_body = provider_body.clone();
                         let replaced_images =
                             super::media_sanitizer::replace_image_blocks_with_marker(
@@ -1455,6 +1460,8 @@ impl RequestForwarder {
         let codex_official_auth_passthrough = matches!(app_type, AppType::Codex)
             && super::providers::is_codex_official_provider(provider);
         let codex_stack_request = self.stack_request && matches!(app_type, AppType::Codex);
+        let strict_native = matches!(app_type, AppType::Codex)
+            && super::codex_native::strict_passthrough(provider, body);
         let mut quota_token = None;
 
         if codex_official_auth_passthrough {
@@ -1978,6 +1985,7 @@ impl RequestForwarder {
             mapped_body
         };
 
+        // Strict official/Krill routes bypass this legacy history cleanup.
         // Codex 远程压缩，以及同一线程里别家回合留下的状态（见 `codex_compaction`）。
         // Chat / Anthropic 转换在转换器里处理；这里管原样转发的两种上游：官方清掉
         // CC Switch 产出、官方一定会拒的条目，原生 Responses 第三方把压缩触发和
@@ -1987,6 +1995,7 @@ impl RequestForwarder {
         if matches!(app_type, AppType::Codex)
             && !codex_responses_to_chat
             && !codex_responses_to_anthropic
+            && !strict_native
         {
             if codex_official_auth_passthrough {
                 if super::providers::codex_compaction::scrub_ccswitch_state_for_official(
@@ -2044,7 +2053,8 @@ impl RequestForwarder {
             if super::providers::codex_stack_upstream_rejects_web_search(
                 provider,
                 request_model.as_deref(),
-            ) && super::providers::strip_codex_hosted_web_search(&mut request_body)
+            ) && !strict_native
+                && super::providers::strip_codex_hosted_web_search(&mut request_body)
             {
                 log::debug!(
                     "[Codex] Dropped hosted web_search for a stacked model (provider={})",
@@ -2074,13 +2084,20 @@ impl RequestForwarder {
             }
         }
 
-        if matches!(app_type, AppType::Codex | AppType::GrokBuild) {
+        if matches!(app_type, AppType::Codex | AppType::GrokBuild) && !strict_native {
             self.apply_media_prevention(&mut request_body, provider);
         }
 
         // 过滤私有参数（以 `_` 开头的字段），防止内部信息泄露到上游
         // 默认使用空白名单，过滤所有 _ 前缀字段
-        let mut filtered_body = prepare_upstream_request_body(request_body);
+        let prepare_body = |body| {
+            if strict_native {
+                super::codex_native::filter_strict_request(body)
+            } else {
+                prepare_upstream_request_body(body)
+            }
+        };
+        let mut filtered_body = prepare_body(request_body);
         if !is_copilot {
             if let Some(overrides) = provider
                 .meta
@@ -2088,9 +2105,12 @@ impl RequestForwarder {
                 .and_then(|meta| meta.local_proxy_request_overrides.as_ref())
             {
                 if apply_local_proxy_body_overrides(&mut filtered_body, overrides) {
-                    filtered_body = prepare_upstream_request_body(filtered_body);
+                    filtered_body = prepare_body(filtered_body);
                 }
             }
+        }
+        if strict_native {
+            super::codex_native::validate_strict_context(body, &filtered_body)?;
         }
         // 出站 body 定稿后刷新真值（覆盖 Codex chat 上游模型覆写、转换层模型改写）
         if let Some(m) = filtered_body
@@ -2905,6 +2925,7 @@ impl RequestForwarder {
                 && request_is_streaming
                 && !response.is_json()
                 && self.rectifier_config.enabled
+                && !strict_native
                 && carries_encrypted_agent_task(&filtered_body)
             {
                 response = self
@@ -7647,6 +7668,48 @@ mod tests {
             assert_eq!(seen.len(), 1);
             assert_eq!(seen[0].body["input"][0], compact);
             assert!(carries_reasoning(&seen[0]));
+        }
+
+        #[tokio::test]
+        async fn strict_krill_returns_rejection_without_rewriting_or_retrying_history() {
+            let rejection = blob_rejection();
+            let upstream = scripted_upstream(vec![rejection.clone()]).await;
+            let mut native = provider(&upstream, "openai_responses");
+            native.name = "Krill".into();
+            let mut request = history_with_foreign_reasoning();
+            request["model"] = json!("gpt-6.1-sol");
+            request["input"].as_array_mut().unwrap().insert(
+                0,
+                json!({"type":"compaction","id":"cmp_keep","encrypted_content":"cipher-cmp"}),
+            );
+            request["input"].as_array_mut().unwrap().push(
+                json!({"type":"function_call_output","call_id":"keep","output":{"_value":7}}),
+            );
+            let error = forwarder(true)
+                .forward_with_retry(
+                    &AppType::Codex,
+                    http::Method::POST,
+                    "/responses",
+                    request.clone(),
+                    chatgpt_headers(),
+                    Extensions::new(),
+                    vec![native],
+                )
+                .await
+                .err()
+                .unwrap();
+            let ProxyError::UpstreamError {
+                status,
+                body: Some(body),
+            } = error.error
+            else {
+                panic!("Expected original upstream rejection")
+            };
+            assert_eq!(status, rejection.0);
+            assert_eq!(serde_json::from_str::<Value>(&body).unwrap(), rejection.1);
+            let seen = upstream.seen.lock().await;
+            assert_eq!(seen.len(), 1, "no lossy repair request");
+            assert_eq!(seen[0].body["input"], request["input"]);
         }
 
         #[tokio::test]

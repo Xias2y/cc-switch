@@ -282,6 +282,8 @@ async fn select_turn(
     if !ctx.is_stack {
         frame = super::model_mapper::apply_model_mapping(frame, &ctx.provider).0;
     }
+    let strict_native = super::codex_native::strict_passthrough(&ctx.provider, &frame);
+    let original = strict_native.then(|| frame.clone());
     let prewarm = frame["generate"].as_bool() == Some(false);
     if let Some(overrides) = ctx
         .provider
@@ -290,7 +292,9 @@ async fn select_turn(
         .and_then(|m| m.local_proxy_request_overrides.as_ref())
     {
         super::forwarder::apply_local_proxy_body_overrides(&mut frame, overrides);
-        frame = filter_private_params_with_whitelist(frame, &[]);
+        if !strict_native {
+            frame = filter_private_params_with_whitelist(frame, &[]);
+        }
         // Routing and quota admission were based on these fields before overrides.
         if frame["type"] != "response.create"
             || (frame["generate"].as_bool() == Some(false)) != prewarm
@@ -314,12 +318,21 @@ async fn select_turn(
             })?;
             super::codex_quota_protection::admit(token, headers).await?;
         }
-        codex_compaction::scrub_ccswitch_state_for_official(&mut frame);
+        if !strict_native {
+            codex_compaction::scrub_ccswitch_state_for_official(&mut frame);
+        }
     } else {
         super::codex_native::prepare(&ctx.provider, &mut frame);
     }
     frame = super::thinking_rectifier::normalize_thinking_type(frame);
-    frame = filter_private_params_with_whitelist(frame, &[]);
+    frame = if strict_native {
+        super::codex_native::filter_strict_request(frame)
+    } else {
+        filter_private_params_with_whitelist(frame, &[])
+    };
+    if let Some(original) = original {
+        super::codex_native::validate_strict_context(&original, &frame)?;
+    }
     if let Some(object) = frame.as_object_mut() {
         object.remove("stream"); // response.create is already a streaming WS operation.
     }
@@ -675,7 +688,9 @@ impl Pending {
         };
         Self {
             first_token_ms: None,
-            repair: (!turn.official).then(Repair::default),
+            repair: (!turn.official
+                && !super::codex_native::strict_passthrough(&turn.ctx.provider, &turn.frame))
+            .then(Repair::default),
             compaction: turn.compaction.then(NativeCompactionState::default),
             connection_guard,
             turn,
@@ -955,6 +970,7 @@ async fn session(
                                 let error = ProxyError::UpstreamError { status: status.unwrap_or(502), body: Some(event.to_string()) };
                                 super::codex_capabilities::failed(&state, &head.turn.ctx.provider, &headers, head.turn.frame["model"].as_str().unwrap_or_default(), codex_compaction::is_compaction_request(&head.turn.frame), &error);
                                 if head.first_token_ms.is_none()
+                                    && !super::codex_native::strict_passthrough(&head.turn.ctx.provider, &head.turn.frame)
                                     && super::opaque_state_rectifier::detect_opaque_state_rejection(
                                         &error, &head.turn.ctx.rectifier_config, &head.turn.frame, !head.turn.official
                                     ).is_some_and(|rejection| {

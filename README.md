@@ -2,7 +2,7 @@
 
 # CC Switch
 
-> **Krill-focused fork (based on upstream v4.0.25).** Adds native Codex Responses WebSockets, context compaction and HTTP zstd for official accounts and Krill in aggregation mode. [Download this fork](https://github.com/Xias2y/cc-switch/releases) · [Implementation and limits](docs/krill-native-backend.md) · [Passive WS status chip](docs/krill-capability-badges.md).
+> **Krill-focused fork (based on upstream v4.0.25).** Adds native Codex Responses WebSockets, context compaction and HTTP zstd for official accounts and Krill in aggregation mode. [Download this fork](https://github.com/Xias2y/cc-switch/releases) · [Implementation and limits](docs/krill-native-backend.md) · [Passive WS status chip](docs/krill-capability-badges.md) · [Strict native passthrough](docs/strict-native-passthrough.md).
 >
 > Thanks to **[@krill-lab/Superba](https://github.com/krill-lab/superba)** for the reference implementation. This is an independent CC Switch fork, not an official upstream release.
 

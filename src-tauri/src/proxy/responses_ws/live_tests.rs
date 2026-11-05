@@ -239,6 +239,54 @@ async fn acceptance(
     }
     results.push("incremental_multiturn_context");
 
+    // A real encrypted reasoning item must either remain readable or expose the
+    // target's rejection. A successful repair by deleting it is never accepted.
+    let seed = json!({"role":"user","content":"Remember HTTP-742 and the task websocket. Compute the coefficient of x^12 in (1+x+x^2+x^3)^10 internally, without tools; return only the integer."});
+    let mut reasoning_frame = frame(model, json!([seed.clone()]));
+    reasoning_frame["reasoning"]["effort"] = json!("high");
+    reasoning_frame["include"] = json!(["reasoning.encrypted_content"]);
+    let reasoning_events = live_turn(&mut socket, reasoning_frame).await?;
+    let output = reasoning_events.last().unwrap()["response"]["output"]
+        .as_array()
+        .ok_or("missing reasoning output")?
+        .clone();
+    if !output.iter().any(|item| {
+        item["type"] == "reasoning"
+            && item["encrypted_content"]
+                .as_str()
+                .is_some_and(|s| !s.is_empty())
+    }) {
+        return Err("high-effort test did not produce encrypted reasoning".into());
+    }
+    let mut replay = vec![seed];
+    replay.extend(output);
+    replay
+        .push(json!({"role":"user","content":"State the marker and task I gave you. Be concise."}));
+    let mut fresh = live_socket(url, headers).await?;
+    let own = live_turn(&mut fresh, frame(model, json!(replay))).await?;
+    let text = text_of(&own);
+    if !text.contains("HTTP-742") || !text.to_ascii_lowercase().contains("websocket") {
+        return Err("source reasoning replay lost the test facts".into());
+    }
+    let opposite = if let Some(upstream) = model.strip_prefix("ccs-krill/") {
+        upstream.to_owned()
+    } else {
+        format!("ccs-krill/{model}")
+    };
+    let mut cross = frame(&opposite, json!(replay));
+    cross.as_object_mut().unwrap().remove("type"); // HTTP has no response.create envelope.
+    cross["stream"] = json!(true);
+    match live_cross_provider(url, headers, &cross).await? {
+        "cross_provider_compaction_accepted_with_context" => {
+            results.push("cross_provider_reasoning_accepted_unchanged")
+        }
+        "cross_provider_compaction_upstream_rejection_preserved" => {
+            results.push("cross_provider_reasoning_upstream_rejection_preserved")
+        }
+        _ => return Err("unexpected reasoning continuation result".into()),
+    }
+    results.push("encrypted_reasoning_source_replay");
+
     let mut tool = frame(
         model,
         json!([{"role":"user","content":"Call echo with value 742."}]),
@@ -411,6 +459,9 @@ async fn live_cross_provider(
                 .unwrap_or_default()
                 .to_ascii_lowercase();
             if code == "invalid_encrypted_content"
+                || message.contains("invalid_encrypted_content")
+                || message.contains("encrypted content")
+                    && message.contains("could not be verified")
                 || message.contains("compaction")
                     && (message.contains("decrypt")
                         || message.contains("decode")
@@ -420,8 +471,11 @@ async fn live_cross_provider(
             }
         }
     }
+    let errors: Vec<_> = values.iter().filter_map(|value| {
+        value.get("error").or_else(||value.pointer("/response/error"))
+    }).map(|error| json!({"code":error["code"],"message":error["message"].as_str().unwrap_or_default().chars().take(300).collect::<String>()})).collect();
     Err(format!(
-        "Unexpected cross-provider response (HTTP {status}); see private request outcome"
+        "Unexpected cross-provider response (HTTP {status}): {errors:?}"
     ))
 }
 

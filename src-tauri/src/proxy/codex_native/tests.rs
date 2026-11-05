@@ -37,16 +37,19 @@ fn native_support_is_scoped_to_provider_name_models_and_explicit_overrides() {
 }
 
 #[test]
-fn native_trigger_tools_and_format_are_preserved_and_legacy_envelopes_still_expand() {
+fn strict_native_trigger_tools_format_and_legacy_envelopes_are_preserved() {
     let native = provider("https://api.kbsfdxc.net");
     let mut request = json!({"model":"gpt-6.1-sol","input":[{"type":"compaction_trigger"}],"tool_choice":"auto","tools":[],"text":{"format":{"type":"json_object"}}});
     let before = request.clone();
     prepare(&native, &mut request);
     assert_eq!(request, before);
     request["input"] = json!([super::super::providers::codex_compaction::compaction_output_item("legacy summary"),{"type":"compaction_trigger"}]);
+    let legacy = request.clone();
     prepare(&native, &mut request);
-    assert_eq!(request["input"][1]["type"], "compaction_trigger");
-    assert!(request["input"][0].to_string().contains("legacy summary"));
+    assert_eq!(
+        request, legacy,
+        "strict routes never expand or drop old state"
+    );
     let mut ordinary = provider("https://example.org");
     ordinary.name = "Other".into();
     let mut bridge = before;
@@ -153,5 +156,42 @@ fn official_identity_ignores_token_rotation_and_records_account_changes_only() {
     assert_eq!(
         owners().lock().unwrap().records[fingerprint].identity,
         same_account
+    );
+}
+
+#[test]
+fn strict_native_history_preserves_nested_payloads_and_rejects_context_overrides() {
+    let native = provider("https://relay.example.org/v1");
+    let request = json!({
+        "model":"gpt-6.1-sol", "_ccs_internal":"local-only",
+        "input":[
+            {"type":"reasoning","id":"foreign-rs","summary":[],"encrypted_content":"cipher-rs"},
+            {"type":"reasoning","id":"rs_plain","summary":[],"content":[]},
+            {"type":"compaction","id":"cmp_keep","encrypted_content":"cipher-cmp"},
+            {"type":"function_call","id":"foreign-fc","call_id":"call_keep","name":"echo","arguments":"{\"_value\":7}"},
+            {"type":"function_call_output","call_id":"call_keep","output":[{"type":"encrypted_content","encrypted_content":"cipher-tool","_format":"keep"}]}
+        ],
+        "tools":[{"type":"function","name":"echo","parameters":{"type":"object","properties":{"_value":{"type":"integer"}}}}]
+    });
+    assert!(strict_passthrough(&native, &request));
+    let filtered = filter_strict_request(request.clone());
+    assert!(filtered.get("_ccs_internal").is_none());
+    assert_eq!(filtered["input"], request["input"]);
+    assert_eq!(filtered["tools"], request["tools"]);
+    assert!(validate_strict_context(&request, &filtered).is_ok());
+    let mut replaced = filtered.clone();
+    replaced["input"] = json!([]);
+    assert!(validate_strict_context(&request, &replaced).is_err());
+    let mut ordinary = native.clone();
+    ordinary.name = "Other".into();
+    assert!(!strict_passthrough(&ordinary, &request));
+    ordinary.name = "Krill".into();
+    ordinary.meta = Some(ProviderMeta {
+        api_format: Some("openai_chat".into()),
+        ..Default::default()
+    });
+    assert!(
+        !strict_passthrough(&ordinary, &request),
+        "conversion routes retain their old behavior"
     );
 }

@@ -317,3 +317,41 @@ async fn an_oversized_upstream_frame_closes_both_legs_with_1009() {
     proxy.stop().await.unwrap();
     task.await.unwrap();
 }
+
+#[tokio::test]
+#[serial_test::serial]
+async fn strict_krill_ws_keeps_history_and_returns_the_original_rejection() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let (tx, mut received) = mpsc::unbounded_channel::<Value>();
+    let error = json!({"type":"invalid_request_error","code":"invalid_encrypted_content","message":"The encrypted content for item rs_keep could not be verified"});
+    let expected_error = error.clone();
+    let router = Router::new().route("/v1/responses", get(move |ws:WebSocketUpgrade| {
+        let tx=tx.clone(); let error=error.clone();
+        async move { ws.on_upgrade(move |mut socket| async move {
+            if let Some(Ok(Message::Text(text)))=socket.recv().await {
+                tx.send(serde_json::from_str(&text).unwrap()).unwrap();
+                socket.send(Message::Text(json!({"type":"response.failed","response":{"status":"failed","error":error}}).to_string())).await.unwrap();
+                let _=socket.recv().await;
+            }
+        }) }
+    }));
+    let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (proxy, url, _db, _restore) = proxy(&base).await;
+    let mut socket = client(&url, "strict-history").await;
+    let frame = json!({"type":"response.create","model":"ccs-krill/gpt-6.1-sol","input":[
+        {"type":"reasoning","id":"rs_keep","encrypted_content":"cipher-rs"},
+        {"type":"compaction","id":"cmp_keep","encrypted_content":"cipher-cmp"},
+        {"type":"function_call_output","call_id":"keep","output":{"_value":7}}
+    ]});
+    let events = run_turn(&mut socket, frame.clone()).await;
+    assert_eq!(events.last().unwrap()["response"]["error"], expected_error);
+    let sent = received.recv().await.unwrap();
+    assert_eq!(sent["input"], frame["input"]);
+    assert_eq!(sent["model"], "gpt-6.1-sol");
+    let _ = socket.close(None).await;
+    proxy.stop().await.unwrap();
+    task.abort();
+}

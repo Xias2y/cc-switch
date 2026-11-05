@@ -41,6 +41,41 @@ pub(crate) fn native_compaction(provider: &Provider, model: &str) -> bool {
             .unwrap_or_else(|| krill(provider) && model.starts_with("gpt-"))
 }
 
+/// Official and Krill native GPT routes never repair history by deleting it.
+pub(crate) fn strict_passthrough(provider: &Provider, request: &Value) -> bool {
+    (providers::is_codex_official_provider(provider) || krill(provider))
+        && native_compaction(provider, request["model"].as_str().unwrap_or_default())
+        && !providers::should_convert_codex_responses_to_chat(provider, "/responses")
+        && !providers::should_convert_codex_responses_to_anthropic(provider, "/responses")
+}
+
+/// CCS routing fields are top-level. Nested keys belong to the native payload,
+/// including structured tool results, and must not be recursively scrubbed.
+pub(super) fn filter_strict_request(mut request: Value) -> Value {
+    if let Some(object) = request.as_object_mut() {
+        object.retain(|key, _| !key.starts_with('_'));
+    }
+    request
+}
+
+/// Explicit overrides must not silently replace the conversation on strict routes.
+pub(super) fn validate_strict_context(before: &Value, after: &Value) -> Result<(), ProxyError> {
+    for key in [
+        "input",
+        "instructions",
+        "tools",
+        "previous_response_id",
+        "include",
+    ] {
+        if before.get(key) != after.get(key) {
+            return Err(ProxyError::InvalidRequest(format!(
+                "Strict native passthrough cannot rewrite conversation context: {key}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn zstd_enabled(provider: &Provider) -> bool {
     provider
         .meta
@@ -66,8 +101,11 @@ pub(super) fn protocol_header(provider: &Provider, name: &str) -> bool {
         )
 }
 
-/// Legacy CCS summary envelopes still need expansion even on native routes.
+/// Legacy summary expansion remains available only outside strict native routes.
 pub(crate) fn prepare(provider: &Provider, body: &mut Value) {
+    if strict_passthrough(provider, body) {
+        return;
+    }
     let native = native_compaction(provider, body["model"].as_str().unwrap_or_default());
     super::providers::codex_compaction::prepare_third_party_request(body, !native);
 }
