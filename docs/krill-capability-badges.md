@@ -1,46 +1,34 @@
-# Codex aggregation capability badges
+# Codex aggregation WS status
 
-The aggregation provider cards append **WS** and **CMP** after their existing
-default/official/model-count chips. They use the original `CardChipBadge`,
-outline border, 18-pixel height, padding, typography and native title tooltip.
-Only the text color changes: `text-success-text` for recent confirmed
-availability and `text-fg-3` for unavailable, unknown or expired evidence.
-No separate status panel, toggle, CTX badge or TOOL badge is added.
+Provider cards show only **WS** after the existing default/official/model-count
+chips. It uses the original `CardChipBadge` with green or gray text and no title,
+help cursor or tooltip. CMP is not displayed. Context compaction still works.
 
-## Passive observation only
+## Actual traffic only
 
-Starting with **4.0.26-krill.3**, neither badge sends capability-check requests.
-There is no synthetic prompt, compaction trigger, background generation, probe
-retry or token usage introduced by the badges. The user's normal model requests
-and real context compaction retain their usual upstream usage and billing.
+No handshake, heartbeat, generation or compaction check is sent for this label.
+The label's code only observes normal routed requests and responses:
 
-The chips describe the provider's most recently used GPT model and the exact
-configuration/account scope observed. They do not assert that every model in
-the provider card has the same capability. The tooltip identifies the model,
-check time and reason. Before evidence is available, both chips are gray.
+- A successful WS upgrade/send or completed turn records green.
+- Received events refresh a long-running turn at most every 30 seconds.
+- An HTTP Responses request or WS fallback records gray, even after earlier WS success.
+- WS connection/send failures and observed upstream closure record gray immediately.
+  Application-level errors carried by a functioning WS do not by themselves change its transport.
+- Restarting the application or stopping the proxy clears prior WS evidence.
 
-- **WS** observes normal Upgrade handshakes and successful WS responses.
-  Evidence expires after 30 minutes without another verification.
-- **CMP** observes successful native compaction from normal conversation traffic,
-  including the native encrypted output. Evidence expires after 24 hours.
-  If no real compaction has occurred, CMP remains gray as unverified even when
-  the provider supports it. Expiry never triggers an active check.
+The visible label reflects the provider's most recently observed GPT-model traffic,
+scoped to its configuration and official account. Concurrent sessions may use
+different transports; the label does not describe every session at once.
+Evidence expires after 30 minutes without further traffic. Gray therefore means
+HTTP, interrupted or not recently observed, rather than unsupported forever.
 
-Model use updates the last-used model and reads the local route configuration.
-A route configured to disable native compaction or use a summary bridge is
-shown unavailable without contacting the provider. One transient WS failure
-can retain a success from the last 15 minutes; repeated failures separated by
-at least a minute, or a definite refusal, turn the chip gray.
+The UI reads local state every 30 seconds while visible and on state-change events.
+It never initiates upstream traffic. Passive CMP metadata from earlier versions
+may remain in the local cache, but it is not displayed or actively probed.
 
-The UI refreshes from a local Tauri command every 30 seconds while visible and
-invalidates on capability-change events. Reading badges never sends a network
-request. Configuration, API key, endpoint or official account changes invalidate
-the corresponding evidence. Cache entries contain configuration/account hashes,
-model names and status metadata, not tokens, keys, response bodies or history.
+## History
 
-## Release history
-
-The badges were introduced in `4.0.26-krill.2`. That version included a small
-isolated CMP probe on model use. **4.0.26-krill.3 removes that probe entirely**.
-Previously cached evidence can remain until its normal expiry; it does not
-cause new requests. This change does not claim a new live model acceptance run.
+`0.0.2` added WS / CMP labels and an isolated CMP probe. `0.0.3` removed that probe.
+`0.0.4` hides CMP, removes the WS tooltip and uses actual HTTP/WS traffic without
+the former WS-success grace period. Backend updater versions retain the existing
+`4.0.26-krill.N` sequence; GitHub Release titles use `CC Switch For Krill 0.0.N`.

@@ -197,30 +197,14 @@ export function buildSwitchSections(input: SwitchModeInput): ProviderSection[] {
 }
 
 function codexCapabilityChips(evidence?: CodexCapabilities): CardChip[] {
-  return (
-    [
-      ["ws", "WS", "WebSocket"],
-      ["cmp", "CMP", "Native context compaction"],
-    ] as const
-  ).map(([key, label, name]) => {
-    const item = evidence?.[key];
-    const status = item?.available
-      ? "Available"
-      : item
-        ? "Unavailable"
-        : "Not verified recently";
-    const checked = item
-      ? ` Checked: ${new Date(item.checkedAt * 1000).toLocaleString()}.`
-      : "";
-    const model = evidence?.model ? ` Model: ${evidence.model}.` : "";
-    return {
-      key: `codex-${key}`,
-      label,
+  return [
+    {
+      key: "codex-ws",
+      label: "WS",
       tone: "outline",
-      available: Boolean(item?.available),
-      title: `${name}: ${status}.${model}${checked} ${item?.detail ?? "Observed from normal requests only. Gray also means unknown or expired."}`,
-    };
-  });
+      available: Boolean(evidence?.ws?.available),
+    },
+  ];
 }
 
 function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {

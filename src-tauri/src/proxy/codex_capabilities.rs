@@ -75,6 +75,11 @@ impl Cache {
                 .ok()
                 .and_then(|bytes| serde_json::from_slice(&bytes).ok())
                 .unwrap_or_default();
+            // A previous process's WS evidence does not establish the current
+            // transport. Preserve unrelated passive compaction evidence only.
+            for record in self.records.values_mut() {
+                record.capabilities.ws = None;
+            }
             self.path = path;
         }
         let now = chrono::Utc::now().timestamp();
@@ -212,6 +217,14 @@ fn notify(state: &ProxyState) {
     }
 }
 
+pub(super) fn clear_ws() {
+    let mut cache = cache().lock().expect("capability cache");
+    cache.load();
+    for record in cache.records.values_mut() {
+        record.capabilities.ws = None;
+    }
+}
+
 fn update(
     provider: &Provider,
     headers: &HeaderMap,
@@ -241,7 +254,7 @@ fn update(
     let recent_success = previous
         .last_success_at
         .is_some_and(|at| now.saturating_sub(at) < RETRY);
-    let available = available || (!definite && recent_success && failures < 2);
+    let available = available || (!ws && !definite && recent_success && failures < 2);
     let changed = previous.available != available || previous.detail != detail;
     *slot = Some(Evidence {
         available,
@@ -275,9 +288,9 @@ pub(super) fn ws(
     let detail = if available {
         "WebSocket verified on this route"
     } else if definite {
-        "This route requires HTTP"
+        "This request uses HTTP instead of WebSocket"
     } else {
-        "Temporary connection failure; recent success is retained briefly"
+        "WebSocket transport is not currently confirmed"
     };
     if update(provider, headers, model, true, available, definite, detail) {
         notify(state);
@@ -329,7 +342,6 @@ pub(super) fn failed(
         entry(&mut cache, provider, headers, model).used_at = chrono::Utc::now().timestamp_millis();
     }
     if matches!(status, 401 | 403) {
-        ws(state, provider, headers, model, false, true);
         if update(
             provider,
             headers,
@@ -362,9 +374,9 @@ pub(super) fn failed(
     }
 }
 
-/// Record the selected model and local configuration only. Availability is
-/// observed from the user's normal requests; no additional request is sent.
-pub(super) fn on_use(state: &ProxyState, provider: &Provider, headers: &HeaderMap, model: &str) {
+/// Observe the transport of an actual HTTP Responses turn. No extra request
+/// is sent, and a previous WS success must not keep this turn green.
+pub(super) fn http(state: &ProxyState, provider: &Provider, headers: &HeaderMap, model: &str) {
     if !model.starts_with("gpt-")
         || !crate::mode::stack::stack_mode_now(&crate::app_config::AppType::Codex)
     {
@@ -375,6 +387,7 @@ pub(super) fn on_use(state: &ProxyState, provider: &Provider, headers: &HeaderMa
         cache.load();
         entry(&mut cache, provider, headers, model).used_at = chrono::Utc::now().timestamp_millis();
     }
+    ws(state, provider, headers, model, false, true);
     if !codex_native::native_compaction(provider, model)
         && update(
             provider,

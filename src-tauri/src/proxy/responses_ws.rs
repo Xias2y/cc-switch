@@ -72,6 +72,7 @@ impl Default for ResponsesWsState {
 
 impl ResponsesWsState {
     pub(super) fn shutdown(&self) {
+        super::codex_capabilities::clear_ws();
         self.shutdown
             .send_modify(|generation| *generation = generation.wrapping_add(1));
     }
@@ -748,6 +749,8 @@ async fn session(
     let mut upstream: Option<Box<WebSocketStream<reqwest::Upgraded>>> = None;
     let mut pinned_route = None;
     let mut pending = VecDeque::<Pending>::new();
+    let mut capability_observed_at = Instant::now();
+    let mut last_ws: Option<(Provider, String)> = None;
     loop {
         tokio::select! {
             _ = shutdown.changed() => {
@@ -794,6 +797,7 @@ async fn session(
                     }
                 };
                 if turn.ctx.app_config.auto_failover_enabled || needs_http(&turn.ctx.provider) {
+                    super::codex_capabilities::ws(&state, &turn.ctx.provider, &headers, turn.frame["model"].as_str().unwrap_or_default(), false, true);
                     fallback(&state, key.as_deref(), &mut down).await;
                     break;
                 }
@@ -821,6 +825,7 @@ async fn session(
                             break;
                         }
                         Err(error) => {
+                            super::codex_capabilities::ws(&state, &turn.ctx.provider, &headers, turn.frame["model"].as_str().unwrap_or_default(), false, false);
                             let status = match error {
                                 // This key belongs to the selected third party,
                                 // not the official login carried by the client.
@@ -839,10 +844,13 @@ async fn session(
                 let frame = turn.frame.to_string();
                 let request = Pending::new(turn, &state).await;
                 if upstream.as_mut().expect("connected upstream").send(UpMessage::Text(frame)).await.is_err() {
+                    super::codex_capabilities::ws(&state, &request.turn.ctx.provider, &headers, request.turn.frame["model"].as_str().unwrap_or_default(), false, false);
                     request.finish(&state, &headers, None, 502);
                     break;
                 }
-                super::codex_capabilities::on_use(&state, &request.turn.ctx.provider, &headers, request.turn.frame["model"].as_str().unwrap_or_default());
+                super::codex_capabilities::ws(&state, &request.turn.ctx.provider, &headers, request.turn.frame["model"].as_str().unwrap_or_default(), true, true);
+                last_ws = Some((request.turn.ctx.provider.clone(), request.turn.frame["model"].as_str().unwrap_or_default().to_owned()));
+                capability_observed_at = Instant::now();
                 pending.push_back(request);
             }
             message = async { upstream.as_mut().expect("connected upstream").next().await }, if upstream.is_some() => {
@@ -857,6 +865,14 @@ async fn session(
                         };
                         let status = terminal_status(&event);
                         let pending_index = pending.iter().position(|head| head.turn.frame.get("stream_id") == event.get("stream_id"));
+                        // Refresh long-running WS turns from traffic already received.
+                        // Never send a heartbeat or a model request for the badge.
+                        if capability_observed_at.elapsed() >= Duration::from_secs(30) {
+                            if let Some(head) = pending_index.and_then(|index| pending.get(index)) {
+                                super::codex_capabilities::ws(&state, &head.turn.ctx.provider, &headers, head.turn.frame["model"].as_str().unwrap_or_default(), true, true);
+                                capability_observed_at = Instant::now();
+                            }
+                        }
                         if status == Some(401)
                             && pending_index.and_then(|index| pending.get(index)).is_some_and(|head| !head.turn.official)
                         {
@@ -900,6 +916,9 @@ async fn session(
                     }
                     Some(Ok(UpMessage::Ping(_) | UpMessage::Pong(_))) => {}
                     Some(Ok(UpMessage::Close(frame))) => {
+                        if let Some((provider, model)) = &last_ws {
+                            super::codex_capabilities::ws(&state, provider, &headers, model, false, false);
+                        }
                         let _ = down.send(Message::Close(frame.map(|frame| CloseFrame {
                             code: frame.code.into(), reason: frame.reason,
                         }))).await;
@@ -910,8 +929,8 @@ async fn session(
                     }
                     Some(Ok(UpMessage::Frame(_))) => {}
                     Some(Err(_)) | None => {
-                        if let Some(head) = pending.front() {
-                            super::codex_capabilities::ws(&state, &head.turn.ctx.provider, &headers, head.turn.frame["model"].as_str().unwrap_or_default(), false, false);
+                        if let Some((provider, model)) = &last_ws {
+                            super::codex_capabilities::ws(&state, provider, &headers, model, false, false);
                         }
                         break;
                     }

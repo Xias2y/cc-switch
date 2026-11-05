@@ -1141,6 +1141,7 @@ async fn handle_responses_for_app(
                 ctx.provider = provider;
             }
             if let Some(headers) = &capability_headers {
+                super::codex_capabilities::http(&state, &ctx.provider, headers, &capability_model);
                 super::codex_capabilities::failed(
                     &state,
                     &ctx.provider,
@@ -1162,7 +1163,7 @@ async fn handle_responses_for_app(
     let response = result.response;
 
     if let Some(headers) = capability_headers {
-        super::codex_capabilities::on_use(
+        super::codex_capabilities::http(
             &state,
             &ctx.provider,
             &headers,

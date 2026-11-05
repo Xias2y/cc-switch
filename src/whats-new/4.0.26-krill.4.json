@@ -1,0 +1,19 @@
+{
+  "version": "4.0.26-krill.4",
+  "items": [
+    {
+      "type": "improve",
+      "zh": "供应商仅显示 WS 文字标签，移除 CMP 与悬浮提示",
+      "zh-TW": "供應商僅顯示 WS 文字標籤，移除 CMP 與懸浮提示",
+      "en": "Show only a plain WS chip; hide CMP and remove hover tooltips",
+      "ja": "WS ラベルだけを表示し、CMP とツールチップを非表示"
+    },
+    {
+      "type": "fix",
+      "zh": "按实际 WS / HTTP 流量更新颜色，不额外请求或消耗 token",
+      "zh-TW": "按實際 WS / HTTP 流量更新顏色，不額外請求或消耗 token",
+      "en": "Track actual WS / HTTP traffic without extra requests or tokens",
+      "ja": "追加リクエストやトークンなしで実際の WS / HTTP 通信を反映"
+    }
+  ]
+}
