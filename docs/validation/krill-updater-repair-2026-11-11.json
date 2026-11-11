@@ -1,0 +1,21 @@
+{
+  "checkedAt": "2026-11-11T05:01:30.539Z",
+  "endpoint": "https://github.com/Xias2y/cc-switch/releases/latest/download/latest.json",
+  "endpointHttpStatus": 200,
+  "installedVersion": "0.1.3",
+  "availableVersion": "0.1.4",
+  "platform": "windows-x86_64",
+  "publicDownloadHttpStatus": 200,
+  "downloadMatchesPublishedBuild": true,
+  "signature": {
+    "algorithm": "ED",
+    "matchingInstalledKey": true,
+    "keyId": "4A138A51F3DBA8CF",
+    "artifactSha256": "034a8415784959f0af483d449a40864eac03529dc5711950a74fa39c293192e5",
+    "artifactBytes": 14056764,
+    "artifactSignatureValid": true,
+    "trustedCommentSignatureValid": true,
+    "modifiedArtifactRejected": true
+  },
+  "installedProgramAndClientConfigUnchanged": true
+}
