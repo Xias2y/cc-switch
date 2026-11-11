@@ -242,6 +242,11 @@
     "artifactId": 13828812055,
     "artifactSha256": "a5fe663ad612e9c18705448592b676172ae6543ce6b1f48cf604aaf03f05a244",
     "staticChecks": "TypeScript, frontend build, Rust formatting, catalog/forwarding regressions and Clippy passed",
-    "releasePublished": false
+    "releasePublished": false,
+    "workflowConclusion": "success",
+    "regressionTestsPassed": 125,
+    "optInLiveTestsIgnoredInCI": 3,
+    "frontendVersionTestsPassed": 12,
+    "pullRequest": 1
   }
 }
