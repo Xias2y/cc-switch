@@ -22,17 +22,36 @@ CCS 使用该供应商的端点和 API Key 读取 `/backend-api/codex/models`，
 请求；要求完成响应中的 `service_tier` 与请求一致。脱敏结果写入 `CCS_WS_LIVE_REPORT`。
 测试不需要官方账号，不读写正在使用的 CCS 数据或 Codex 配置。它会消耗少量 Krill 额度。
 
-### 2026-11-11 实测限制
+### 0.1.5：说明本地化与地址设置
 
-本次测试的 Krill Key 在 Astra、Sol、Terra 上通过了 HTTP Fast 验收（完成响应返回
-`priority`）。Astra/Sol 的 HTTP Ultrafast 请求完成后返回 `default`，未通过实际档位验收；
-WS 在发送生成请求前回退，直接握手返回 `426`。绕过 CCS 比较原生接口、三条公开线路及
-`-ultrafast` 模型名，仍未获得 `ultrafast` 完成响应。因此该修复恢复的是上游声明的目录
-能力，不能声称这把 Key 的 Ultrafast 已实际生效，不能据此发布“全部实测通过”的版本。
-完整脱敏记录见 [验收报告](validation/krill-speed-tiers-2026-11-11.json)。
-验收依据为 [Responses API 的 service_tier 定义](https://developers.openai.com/api/reference/resources/responses/methods/create)：
-响应返回实际使用的处理档位，可能与请求值不同。请求格式对照
-[Ultrafast 官方说明](https://developers.openai.com/api/docs/guides/ultrafast-mode)。
+CCS 中文界面下，发布模型目录时会翻译 Fast／Ultrafast 的已知说明，例如
+“为对延迟敏感的任务提供最快响应。”；英文界面保留上游文本。缓存仍保存原始元数据，
+语言切换后重新应用当前模式，再完整重启 Codex 读取新目录。只修改说明，不更改
+档位 ID、可用档位、模型名、工具或上下文标记，也不把显示文案当成实际可用性检测。
+
+当前验证过的配置是：Krill Base URL 填线路裸域名，例如
+`https://api.kbsfdxc.net`，**关闭“完整 URL”**，CCS 会拼成 `/v1/responses`。
+原生通道也可填 `https://api.kbsfdxc.net/backend-api/codex` 并关闭该开关，
+CCS 会追加 `/responses`。只有填入包含 `/responses` 的完整端点地址时才使用该开关；
+不要给裸域名打开它。更换接口路径不是启用 Ultrafast 的必要条件。
+保留客户端本地代理地址；不要把 Codex 配置中的 `127.0.0.1` 换成上游地址。
+
+### 2026-11-11 实际 HTTP 行为与 WS 限制
+
+后续独立 HTTP 短请求确认：Sol 的 Fast 完成响应返回 `priority`。
+请求 `ultrafast` 时，经 CCS 聚合和直连 Krill 原生接口均可完成，但响应仍返回 `default`。
+Krill 只读用量接口将这两次请求记为 `gpt-6.1-sol-ultrafast`；请求数及输入／输出 token 数
+与本次独立样本完全一致。这证明 Krill 按 Ultrafast 归类和计费，不能单凭响应里的
+`default` 判定未命中 Ultrafast。与此同时，计费也不能证明上游实际采用了独立加速：
+三轮相同输出对照中 Ultrafast 与 Fast 的正文输出速度接近，尚未证实额外提速。
+
+三个公开线路的 WS 握手均返回 `426`，错误正文明确指出当前账号最多 5 个并发 WS
+会话、名额已满。该次错误应解释为连接名额限制，不代表线路不支持 WS。
+空闲连接关闭并释放名额后才能继续验证 WS 下的档位；CCS 的正常 HTTP 回退保留。
+
+旧版验收报告仍保留为当时记录：[0.1.4 验收报告](validation/krill-speed-tiers-2026-11-11.json)。
+本次修复未新增主动探测，不为状态标签生成模型请求。`service_tier` 由客户端选择，
+不要为了开启 Ultrafast 添加固定 Body 覆盖，否则会阻止切回 Standard／Fast。
 
 ## English
 
@@ -56,12 +75,36 @@ verifies the generated aggregation catalog, and requires completed upstream resp
 the requested service tier. No official account or active installation is used. Live requests
 consume a small amount of Krill quota; the report excludes credentials and response bodies.
 
-### Live limitation on 2026-11-11
+### 0.1.5: localized descriptions and endpoint settings
 
-The tested Krill key passed HTTP Fast for Astra, Sol and Terra with `priority` in completed
-responses. Astra/Sol Ultrafast completed with `default`, failing the requested-tier assertion.
-WebSocket fell back before generation; direct upstream handshakes returned 426. Direct native
-endpoint, public-line and suffix-name controls did not produce a completed `ultrafast` response
-either. The catalog fix is implemented, but full live acceptance has **not** passed. See the
-[sanitized report](validation/krill-speed-tiers-2026-11-11.json); do not describe this build as
-having verified operational Ultrafast for the tested credentials.
+When CCS publishes a model catalog, Chinese CCS UI languages translate known Fast/Ultrafast
+descriptions; English keeps the upstream text. The cache retains original metadata. After
+changing language, reapply the current mode and fully restart Codex to reload its catalog.
+Only descriptions change; tier IDs, offered tiers, models, tools and native context markers
+stay intact. Display metadata is not an availability probe.
+
+The verified Krill setup uses a line origin such as `https://api.kbsfdxc.net` with **Full URL
+off**; CCS appends `/v1/responses`. A native base such as
+`https://api.kbsfdxc.net/backend-api/codex` also keeps Full URL off and gets `/responses`
+appended. Use Full URL only when supplying the entire endpoint ending in `/responses`.
+Changing paths is not required to request Ultrafast. Keep the local proxy address in Codex.
+
+### Actual HTTP behavior and WS limit on 2026-11-11
+
+Isolated Sol HTTP requests confirmed Fast completed with `priority`. Requests for `ultrafast`
+completed with `default`, both through CCS aggregation and directly against Krill's native
+endpoint. Krill's read-only usage API classified the two requests as
+`gpt-6.1-sol-ultrafast`; request counts and input/output token totals exactly matched these
+isolated samples. This confirms Krill's tier classification and billing, not independent
+server-side acceleration. A `default` completion alone does not establish that Krill ignored
+the requested tier. Three matched-output rounds showed Ultrafast throughput close to Fast;
+additional acceleration remains unverified.
+
+All three public lines refused WS with HTTP 426 and an explicit account limit of five
+concurrent WS sessions. This was a session-capacity error, not proof of unsupported WS.
+Free a connection slot before further WS tier verification. Existing HTTP fallback is retained.
+
+The [original 0.1.4 acceptance report](validation/krill-speed-tiers-2026-11-11.json) remains
+a historical record. This fix adds no active capability probing or generated badge requests.
+Let the client choose each tier; a fixed Body override would prevent switching back to
+Standard or Fast.

@@ -170,6 +170,7 @@ pub(crate) fn apply(catalog: &mut Value, models: &Models, stack_key: Option<&str
     let Some(entries) = catalog.get_mut("models").and_then(Value::as_array_mut) else {
         return;
     };
+    let language = crate::tray::tray_language();
     let prefix = stack_key.map(|key| format!("ccs-{key}/"));
     for entry in entries {
         let Some(slug) = entry.get("slug").and_then(Value::as_str) else {
@@ -182,9 +183,41 @@ pub(crate) fn apply(catalog: &mut Value, models: &Models, stack_key: Option<&str
         let Some(tiers) = model.and_then(|model| models.get(model)) else {
             continue;
         };
-        entry["service_tiers"] = json!(tiers.service_tiers);
+        entry["service_tiers"] = json!(localized_service_tiers(&tiers.service_tiers, &language));
         entry["additional_speed_tiers"] = json!(tiers.additional_speed_tiers);
     }
+}
+
+/// Translate display text at publication time so the source cache stays language-neutral.
+/// Only known descriptions are translated; new upstream wording and protocol fields survive.
+fn localized_service_tiers(tiers: &[Value], language: &str) -> Vec<Value> {
+    let mut localized = tiers.to_vec();
+    if !matches!(language, "zh" | "zh-TW") {
+        return localized;
+    }
+    for tier in &mut localized {
+        let description = match (
+            tier.get("id").and_then(Value::as_str),
+            tier.get("description").and_then(Value::as_str),
+        ) {
+            (Some("priority" | "fast"), Some("2x speed, increased usage")) => "2 倍速度，用量增加",
+            (Some("priority" | "fast"), Some("1.5x speed, increased usage")) => {
+                "1.5 倍速度，用量增加"
+            }
+            (Some("priority" | "fast"), Some("1.5x speed")) => "1.5 倍速度",
+            (
+                Some("ultrafast"),
+                Some("The fastest available responses for latency-sensitive work."),
+            ) if language == "zh-TW" => "為對延遲敏感的工作提供最快回應。",
+            (
+                Some("ultrafast"),
+                Some("The fastest available responses for latency-sensitive work."),
+            ) => "为对延迟敏感的任务提供最快响应。",
+            _ => continue,
+        };
+        tier["description"] = json!(description);
+    }
+    localized
 }
 
 #[cfg(test)]
