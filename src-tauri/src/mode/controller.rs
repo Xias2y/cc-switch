@@ -455,7 +455,7 @@ async fn write_proxy(
             };
             let mut prepared =
                 codex_direct::prepare(&state.codex_oauth_manager, &owner, &spec).map_err(err)?;
-            codex_direct::prepare_official_rows(&state.db, &owner, &spec, &mut prepared)
+            codex_direct::prepare_model_rows(&state.db, &owner, &spec, &mut prepared)
                 .await
                 .map_err(err)?;
             let planned = codex_direct::plan(&state.db, &owner, &spec, &prepared).map_err(err)?;

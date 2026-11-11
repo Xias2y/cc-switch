@@ -1,0 +1,252 @@
+{
+  "checkedDate": "2026-11-11",
+  "sourceCommit": "584a8fb",
+  "buildRun": 42956935551,
+  "acceptanceArtifactSha256": "f91e449042cfd0bfd6916249f33ce4f74f2b8ae9579aa3ba71c32c4bb18ba60b",
+  "liveAcceptance": {
+    "scope": "Generated CCS aggregation catalog and real Krill HTTP/WS requests",
+    "catalog": [
+      {
+        "model": "ccs-krill/gpt-6-astra",
+        "service_tiers": [
+          {
+            "description": "2x speed, increased usage",
+            "id": "priority",
+            "name": "Fast"
+          },
+          {
+            "description": "The fastest available responses for latency-sensitive work.",
+            "id": "ultrafast",
+            "name": "Ultrafast"
+          }
+        ],
+        "additional_speed_tiers": [
+          "fast"
+        ]
+      },
+      {
+        "model": "ccs-krill/gpt-6.1-sol",
+        "service_tiers": [
+          {
+            "description": "2x speed, increased usage",
+            "id": "priority",
+            "name": "Fast"
+          },
+          {
+            "description": "The fastest available responses for latency-sensitive work.",
+            "id": "ultrafast",
+            "name": "Ultrafast"
+          }
+        ],
+        "additional_speed_tiers": [
+          "fast"
+        ]
+      },
+      {
+        "model": "ccs-krill/gpt-6.1-terra",
+        "service_tiers": [
+          {
+            "description": "1.5x speed",
+            "id": "priority",
+            "name": "Fast"
+          }
+        ],
+        "additional_speed_tiers": [
+          "fast"
+        ]
+      }
+    ],
+    "results": [
+      {
+        "model": "gpt-6-astra",
+        "transport": "http",
+        "requested_tier": "priority",
+        "returned_tier": "priority",
+        "status": "completed",
+        "output_ok": true,
+        "elapsed_ms": 2281,
+        "passed": true
+      },
+      {
+        "model": "gpt-6-astra",
+        "transport": "websocket",
+        "requested_tier": "priority",
+        "elapsed_ms": 409,
+        "passed": false,
+        "error": "generation: socket closed with 1012"
+      },
+      {
+        "model": "gpt-6-astra",
+        "transport": "http",
+        "requested_tier": "ultrafast",
+        "returned_tier": "default",
+        "status": "completed",
+        "output_ok": true,
+        "elapsed_ms": 1633,
+        "passed": false
+      },
+      {
+        "model": "gpt-6-astra",
+        "transport": "websocket",
+        "requested_tier": "ultrafast",
+        "elapsed_ms": 554,
+        "passed": false,
+        "error": "generation: socket closed with 1012"
+      },
+      {
+        "model": "gpt-6.1-sol",
+        "transport": "http",
+        "requested_tier": "priority",
+        "returned_tier": "priority",
+        "status": "completed",
+        "output_ok": true,
+        "elapsed_ms": 2620,
+        "passed": true
+      },
+      {
+        "model": "gpt-6.1-sol",
+        "transport": "websocket",
+        "requested_tier": "priority",
+        "elapsed_ms": 393,
+        "passed": false,
+        "error": "generation: socket closed with 1012"
+      },
+      {
+        "model": "gpt-6.1-sol",
+        "transport": "http",
+        "requested_tier": "ultrafast",
+        "returned_tier": "default",
+        "status": "completed",
+        "output_ok": true,
+        "elapsed_ms": 1405,
+        "passed": false
+      },
+      {
+        "model": "gpt-6.1-sol",
+        "transport": "websocket",
+        "requested_tier": "ultrafast",
+        "elapsed_ms": 377,
+        "passed": false,
+        "error": "generation: socket closed with 1012"
+      },
+      {
+        "model": "gpt-6.1-terra",
+        "transport": "http",
+        "requested_tier": "priority",
+        "returned_tier": "priority",
+        "status": "completed",
+        "output_ok": true,
+        "elapsed_ms": 1968,
+        "passed": true
+      },
+      {
+        "model": "gpt-6.1-terra",
+        "transport": "websocket",
+        "requested_tier": "priority",
+        "elapsed_ms": 401,
+        "passed": false,
+        "error": "generation: socket closed with 1012"
+      }
+    ]
+  },
+  "directEndpointControls": [
+    {
+      "path": "/v1/responses",
+      "transport": "http",
+      "httpStatus": 200,
+      "tier": "default",
+      "status": "completed",
+      "errorCodes": [],
+      "elapsedMs": 1743
+    },
+    {
+      "path": "/v1/responses",
+      "transport": "websocket-handshake",
+      "status": 426
+    },
+    {
+      "path": "/backend-api/codex/responses",
+      "transport": "http",
+      "httpStatus": 200,
+      "tier": "default",
+      "status": "completed",
+      "errorCodes": [],
+      "elapsedMs": 3486
+    },
+    {
+      "path": "/backend-api/codex/responses",
+      "transport": "websocket-handshake",
+      "status": 426
+    }
+  ],
+  "modelSuffixControls": [
+    {
+      "requestedModel": "gpt-6-astra-ultrafast",
+      "httpStatus": 200,
+      "returnedTier": "default",
+      "status": "completed",
+      "returnedModel": "gpt-6-astra-ultrafast"
+    },
+    {
+      "requestedModel": "gpt-6.1-sol-ultrafast",
+      "httpStatus": 200,
+      "returnedTier": "default",
+      "status": "completed",
+      "returnedModel": "gpt-6.1-sol-ultrafast"
+    }
+  ],
+  "lineControls": [
+    {
+      "line": "overseas-codex",
+      "transport": "http",
+      "httpStatus": 200,
+      "returnedTier": "default",
+      "status": "completed"
+    },
+    {
+      "line": "overseas-codex",
+      "transport": "websocket-handshake",
+      "status": 426
+    },
+    {
+      "line": "cn-native",
+      "transport": "http",
+      "httpStatus": 200,
+      "returnedTier": "default",
+      "status": "completed"
+    },
+    {
+      "line": "cn-native",
+      "transport": "websocket-handshake",
+      "status": 426
+    },
+    {
+      "line": "cdn-native",
+      "transport": "http",
+      "httpStatus": 200,
+      "returnedTier": "default",
+      "status": "completed"
+    },
+    {
+      "line": "cdn-native",
+      "transport": "websocket-handshake",
+      "status": 426
+    }
+  ],
+  "installationUnchanged": true,
+  "outcome": "Fast HTTP passed. Ultrafast responses reported default; upstream WS handshakes returned 426. Full live acceptance did not pass.",
+  "windowsBuild": {
+    "version": "0.1.4",
+    "buildCommit": "584a8fb",
+    "installerBuilt": true,
+    "artifactId": 13828812055,
+    "artifactSha256": "a5fe663ad612e9c18705448592b676172ae6543ce6b1f48cf604aaf03f05a244",
+    "staticChecks": "TypeScript, frontend build, Rust formatting, catalog/forwarding regressions and Clippy passed",
+    "releasePublished": false,
+    "workflowConclusion": "success",
+    "regressionTestsPassed": 125,
+    "optInLiveTestsIgnoredInCI": 3,
+    "frontendVersionTestsPassed": 12,
+    "pullRequest": 1
+  }
+}
