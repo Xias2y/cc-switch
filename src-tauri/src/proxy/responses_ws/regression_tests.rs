@@ -7,6 +7,42 @@ use tokio_tungstenite::tungstenite::protocol::frame::{
 
 #[tokio::test]
 #[serial_test::serial]
+async fn krill_speed_tiers_pass_through_http_and_websocket_without_becoming_overrides() {
+    let mut upstream = mock(false).await;
+    let (proxy, url, db, _restore) = proxy(&upstream.base).await;
+    let mut krill = provider("krill", &upstream.base);
+    krill.name = "Krill".into();
+    db.save_provider("codex", &krill).unwrap();
+    let mut socket = client(&url, "krill-speed-tiers").await;
+    for tier in ["priority", "ultrafast", "default"] {
+        let body = json!({"model":"ccs-krill/gpt-6-astra", "service_tier":tier,
+            "input":[{"role":"user","content":"Reply OK."}]});
+        let response = reqwest::Client::new()
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let (_, sent) = upstream.received.recv().await.unwrap();
+        assert_eq!(sent["service_tier"], tier);
+        assert_eq!(sent["model"], "gpt-6-astra");
+        assert_eq!(sent["input"], body["input"]);
+
+        let mut frame = body.clone();
+        frame["type"] = json!("response.create");
+        run_turn(&mut socket, frame).await;
+        let (_, sent) = upstream.received.recv().await.unwrap();
+        assert_eq!(sent["service_tier"], tier);
+        assert_eq!(sent["model"], "gpt-6-astra");
+        assert_eq!(sent["input"], body["input"]);
+    }
+    socket.close(None).await.unwrap();
+    proxy.stop().await.unwrap();
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn ws_reasoning_rejection_reaches_http_repair_without_dropping_compaction() {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await

@@ -1,0 +1,82 @@
+name: Krill speed tiers build
+
+on:
+  push:
+    branches: [fix/krill-speed-tiers]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: krill-speed-tiers-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CC_SWITCH_TEST_HOME: ${{ runner.temp }}\ccs-speed-tests
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - uses: pnpm/action-setup@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95.0"
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: src-tauri -> target
+          shared-key: krill-speed-tiers
+          cache-on-failure: true
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check types and build frontend
+        run: |
+          pnpm typecheck
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm build:renderer
+      - name: Check Rust formatting
+        run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
+      - name: Compile portable acceptance test binary
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts, $env:CC_SWITCH_TEST_HOME | Out-Null
+          cargo test --manifest-path src-tauri/Cargo.toml --lib --no-run --message-format=json > build-messages.jsonl
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $binary = Get-Content build-messages.jsonl | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.profile.test -and $_.executable } | Select-Object -Last 1 -ExpandProperty executable
+          Copy-Item -LiteralPath $binary -Destination artifacts/ccs-krill-acceptance.exe
+      - name: Catalog and forwarding regressions
+        shell: pwsh
+        run: |
+          foreach ($suite in @('codex_krill_models::', 'codex_direct::tests::', 'codex_config::tests::', 'proxy::responses_ws::tests::', 'proxy::codex_native::tests::')) {
+            & ./artifacts/ccs-krill-acceptance.exe $suite --test-threads=1
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Upload acceptance runner
+        uses: actions/upload-artifact@v4
+        with:
+          name: krill-speed-tiers-acceptance-windows-x64
+          path: artifacts/ccs-krill-acceptance.exe
+          retention-days: 14
+      - name: Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --lib -- -D warnings
+      - name: Build Windows installer
+        run: |
+          '{"bundle":{"createUpdaterArtifacts":false}}' | Set-Content -Encoding utf8 build-config.json
+          pnpm tauri build --bundles nsis --config build-config.json
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: krill-speed-tiers-windows-x64
+          path: |
+            src-tauri/target/release/cc-switch.exe
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+          retention-days: 30

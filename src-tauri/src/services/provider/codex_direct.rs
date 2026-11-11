@@ -50,6 +50,7 @@ use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
 use crate::services::subscription::CodexKeychainLogin;
 use std::sync::Arc;
 
+use super::codex_krill_models;
 use super::codex_login::{self, AuthInput, AuthPlan, AuthTarget, LoginStash, STASH_FILENAME};
 use super::codex_official_models::{self, NativeRows, OfficialLogin, OfficialSkip};
 use super::ProviderService;
@@ -149,9 +150,11 @@ pub(crate) struct Prepared {
     target_login: Option<(String, Value)>,
     /// 要切走的托管账号，和采纳 CLI 轮换后记下的盘上 refresh token。
     outgoing: Option<(String, CodexLiveAuthSwitchGuard)>,
-    /// 官方做路由、又发布了 Stack 模型时目录里的官方行（[`prepare_official_rows`]）。
+    /// 官方做路由、又发布了 Stack 模型时目录里的官方行（[`prepare_model_rows`]）。
     native: Option<NativeRows>,
-    /// 钥匙串里 Codex 的登录，在拿锁之前读好（见 [`prepare_official_rows`]）：钥匙串不归
+    /// Native Krill speed tiers, scoped to each target provider's endpoint and key.
+    krill_models: std::collections::BTreeMap<String, codex_krill_models::Models>,
+    /// 钥匙串里 Codex 的登录，在拿锁之前读好（见 [`prepare_model_rows`]）：钥匙串不归
     /// 写锁管，`security` 还可能弹出授权对话框，不能让写锁等着用户点。锁里没有就当读不出。
     keychain: Option<CodexKeychainLogin>,
 }
@@ -201,17 +204,23 @@ pub(crate) fn prepare(
     Ok(Prepared {
         target_login,
         outgoing,
+        krill_models: target_provider(target)
+            .and_then(|provider| {
+                codex_krill_models::cached(provider).map(|rows| (provider.id.clone(), rows))
+            })
+            .into_iter()
+            .collect(),
         ..Prepared::default()
     })
 }
 
-/// 官方做路由、又发布了 Stack 模型时，按操作之后 Codex 会用的登录取官方模型行。可能联网，
+/// 路由／聚合的 Krill 速度档位，以及官方路由发布 Stack 时的官方模型行。可能联网，
 /// 所以和 [`prepare`] 一样在拿写锁之前做；登录是按未加锁读到的内容预测的，拿锁后在
 /// [`run_with_edits`] 里按真实输入再核对一次。
 ///
 /// 读钥匙串（`security` 可能等用户点授权框）和取官方行（跑 Codex 子进程、联网最多
 /// 10 秒）放到阻塞线程池里做，不占异步运行时的工作线程。
-pub(crate) async fn prepare_official_rows(
+pub(crate) async fn prepare_model_rows(
     db: &Database,
     owner: &Owner<'_>,
     target: &Target<'_>,
@@ -220,6 +229,11 @@ pub(crate) async fn prepare_official_rows(
     let Target::Proxy { route, stack, .. } = target else {
         return Ok(());
     };
+    for provider in std::iter::once(*route).chain(stack.iter().map(|member| &member.provider)) {
+        if let Some(rows) = codex_krill_models::rows(provider).await {
+            prepared.krill_models.insert(provider.id.clone(), rows);
+        }
+    }
     if !needs_official_rows(route, stack) {
         return Ok(());
     }
@@ -255,7 +269,7 @@ pub(crate) fn needs_official_rows(route: &Provider, stack: &[Member]) -> bool {
 }
 
 /// 按未加锁读到的内容预测这次操作之后 Codex 会用的登录（能取官方列表的才是 `Ok`，否则带
-/// 着取不到的原因）。钥匙串没预先读过（[`prepare_official_rows`] 之外的调用方）就在用到时
+/// 着取不到的原因）。钥匙串没预先读过（[`prepare_model_rows`] 之外的调用方）就在用到时
 /// 读，调用方要在阻塞线程里。
 pub(crate) fn predicted_official_login(
     db: &Database,
@@ -574,6 +588,11 @@ impl Planned {
     pub(crate) fn config(&self) -> &CodexConfigPatch {
         &self.config
     }
+
+    #[cfg(test)]
+    pub(crate) fn catalog_for_test(&self) -> Value {
+        serde_json::from_slice(self.catalog.as_deref().expect("model catalog")).unwrap()
+    }
 }
 
 /// 算出写入内容；行有问题（比如会把官方登录发给第三方）就在这里报错，什么都不写。
@@ -712,7 +731,7 @@ pub(crate) fn plan(
             effort.as_deref(),
         ));
     }
-    let catalog = match (stack_catalog, provider, &projection) {
+    let mut catalog = match (stack_catalog, provider, &projection) {
         (Some(catalog), _, _) => {
             // 窗口类全局键会覆盖目录里的每一行，改由各家写进自己的行。
             exclusive.retain(|(key, _)| !STACK_SUNK_WINDOW_KEYS.contains(&key.as_str()));
@@ -728,6 +747,16 @@ pub(crate) fn plan(
         }
         _ => None,
     };
+    if let Some(catalog) = catalog.as_mut() {
+        if let Some(rows) = provider.and_then(|provider| prepared.krill_models.get(&provider.id)) {
+            codex_krill_models::apply(catalog, rows, None);
+        }
+        for member in stack {
+            if let Some(rows) = prepared.krill_models.get(&member.provider.id) {
+                codex_krill_models::apply(catalog, rows, Some(&member.key));
+            }
+        }
+    }
     let catalog = catalog
         .map(|catalog| sorted_json_bytes(&catalog))
         .transpose()?;
@@ -1173,7 +1202,7 @@ pub(crate) fn run_with_edits(
     let config_text = read_config_text();
     // 目录里的官方行是按拿锁前预测的登录取的：实际的目标登录换了人（Codex 恰好重新登录、
     // settle 补完了上一次操作），就停下，什么都不写。不能换成别的来源：目录已经算进契约。
-    // 钥匙串用取完官方行后读到的那次（见 `prepare_official_rows`），不在锁里读。
+    // 钥匙串用取完官方行后读到的那次（见 `prepare_model_rows`），不在锁里读。
     if let Some(expected) = &planned.native_identity {
         let keychain = || {
             prepared

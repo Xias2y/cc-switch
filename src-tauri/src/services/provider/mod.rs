@@ -9,6 +9,7 @@ pub(crate) mod claude_official;
 pub(crate) mod codex_client_catalog;
 pub(crate) mod codex_direct;
 mod codex_editor;
+pub(crate) mod codex_krill_models;
 mod codex_login;
 pub(crate) mod codex_official_models;
 pub(crate) mod codex_terminal;

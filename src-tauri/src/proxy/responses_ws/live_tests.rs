@@ -5,6 +5,192 @@ use std::path::PathBuf;
 
 const LIVE_WAIT: Duration = Duration::from_secs(600);
 
+/// Opt-in acceptance for the generated picker catalog and the real CCS proxy.
+/// Run the compiled test binary with a temporary CC_SWITCH_TEST_HOME. The fixture
+/// contains only krill_settings; no official account is required or contacted.
+#[tokio::test]
+#[ignore = "Requires explicit authorization and a private CCS_WS_LIVE_FIXTURE; consumes Krill quota"]
+#[serial_test::serial]
+async fn live_krill_speed_tiers_acceptance() {
+    use crate::mode::stack::Member;
+    use crate::services::provider::codex_direct::{self, Owner, Prepared, Target};
+
+    let _restore = RestoreState::capture();
+    let fixture: Value = serde_json::from_slice(
+        &std::fs::read(std::env::var_os("CCS_WS_LIVE_FIXTURE").expect("private fixture")).unwrap(),
+    )
+    .unwrap();
+    let report_path = PathBuf::from(std::env::var_os("CCS_WS_LIVE_REPORT").expect("report path"));
+    crate::proxy::http_client::init(None).unwrap();
+    let db = Arc::new(Database::memory().unwrap());
+    let mut krill = Provider::with_id(
+        "live-krill".into(),
+        "Krill".into(),
+        fixture["krill_settings"].clone(),
+        None,
+    );
+    krill.settings_config["modelCatalog"] = json!({"models":[
+        {"model":"gpt-6-astra"},{"model":"gpt-6.1-sol"},{"model":"gpt-6.1-terra"}
+    ]});
+    krill.meta = Some(crate::provider::ProviderMeta {
+        api_format: Some("openai_responses".into()),
+        ..Default::default()
+    });
+    db.save_provider("codex", &krill).unwrap();
+    let mut route = krill.clone();
+    route.id = "unused-route".into();
+    route.name = "Unused route".into();
+    db.save_provider("codex", &route).unwrap();
+    db.set_current_provider("codex", &route.id).unwrap();
+    state::update(&DeviceStore::for_device(), |live| {
+        let app = live.apps.entry("codex".into()).or_default();
+        app.mode = Some(Mode::Proxy);
+        app.proxy_route = Some(route.id.clone());
+        app.stack.enabled = true;
+        app.stack.members = vec![route.id.clone(), krill.id.clone()];
+        app.stack.keys.insert("krill".into(), krill.id.clone());
+    })
+    .unwrap();
+    let proxy = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        db.clone(),
+        None,
+    );
+    let info = proxy.start().await.unwrap();
+    let base = format!("http://127.0.0.1:{}/v1", info.port);
+    let members = vec![Member {
+        provider: krill,
+        key: "krill".into(),
+        route: false,
+        model_ids: vec![],
+    }];
+    let target = Target::Proxy {
+        route: &route,
+        base_url: &base,
+        stack: &members,
+    };
+    let mut prepared = Prepared::default();
+    codex_direct::prepare_model_rows(&db, &Owner::None, &target, &mut prepared)
+        .await
+        .unwrap();
+    let catalog = codex_direct::plan(&db, &Owner::None, &target, &prepared)
+        .unwrap()
+        .catalog_for_test();
+    let mut report = json!({"scope":"Generated CCS aggregation catalog and real Krill HTTP/WS requests", "catalog":[], "results":[]});
+    for row in catalog["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["slug"].as_str().unwrap().starts_with("ccs-krill/"))
+    {
+        report["catalog"].as_array_mut().unwrap().push(json!({"model":row["slug"], "service_tiers":row["service_tiers"], "additional_speed_tiers":row["additional_speed_tiers"]}));
+    }
+    std::fs::write(&report_path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    let url = format!("{base}/responses");
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "authorization",
+        HeaderValue::from_static("Bearer isolated-test-client"),
+    );
+    headers.insert("originator", HeaderValue::from_static("codex_cli_rs"));
+    headers.insert("version", HeaderValue::from_static("0.162.0"));
+    headers.insert(
+        "user-agent",
+        HeaderValue::from_static("codex_cli_rs/0.162.0"),
+    );
+    headers.insert(
+        "openai-beta",
+        HeaderValue::from_static("responses_websockets=2026-02-06"),
+    );
+
+    for model in ["gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra"] {
+        let selected = format!("ccs-krill/{model}");
+        let entry = catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["slug"] == selected)
+            .unwrap();
+        let tiers = entry["service_tiers"].as_array().unwrap();
+        assert!(
+            tiers.iter().any(|tier| tier["id"] == "priority"),
+            "Fast absent for {model}"
+        );
+        if model == "gpt-6.1-terra" {
+            assert!(
+                !tiers.iter().any(|tier| tier["id"] == "ultrafast"),
+                "Terra must not inherit Ultrafast"
+            );
+        } else {
+            assert!(
+                tiers.iter().any(|tier| tier["id"] == "ultrafast"),
+                "Ultrafast absent for {model}"
+            );
+        }
+        for tier in ["priority", "ultrafast"] {
+            if model == "gpt-6.1-terra" && tier == "ultrafast" {
+                continue;
+            }
+            for transport in ["http", "websocket"] {
+                let started = Instant::now();
+                let mut body = frame(
+                    &selected,
+                    json!([{"role":"user", "content":"Reply with exactly OK."}]),
+                );
+                body["service_tier"] = json!(tier);
+                let outcome = if transport == "http" {
+                    body.as_object_mut().unwrap().remove("type");
+                    body["stream"] = json!(true);
+                    live_http(&url, &headers, &body, false).await
+                } else {
+                    match live_socket(&url, &headers).await {
+                        Ok(mut socket) => {
+                            let outcome = live_turn(&mut socket, body)
+                                .await
+                                .map(|events| events.last().unwrap()["response"].clone());
+                            let _ = socket.close(None).await;
+                            outcome
+                        }
+                        Err(error) => Err(error),
+                    }
+                };
+                let result = match outcome {
+                    Ok(response) => {
+                        let output = response["output"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .flat_map(|item| item["content"].as_array().into_iter().flatten())
+                            .filter_map(|content| content["text"].as_str())
+                            .collect::<String>();
+                        json!({"model":model,"transport":transport,"requested_tier":tier,
+                            "returned_tier":response["service_tier"],"status":response["status"],
+                            "output_ok":output.trim()=="OK", "elapsed_ms":started.elapsed().as_millis(),
+                            "passed":response["status"]=="completed" && response["service_tier"]==tier && output.trim()=="OK"})
+                    }
+                    Err(error) => json!({"model":model,"transport":transport,"requested_tier":tier,
+                        "elapsed_ms":started.elapsed().as_millis(),"passed":false,"error":error}),
+                };
+                println!("Krill speed acceptance: {result}");
+                report["results"].as_array_mut().unwrap().push(result);
+                std::fs::write(&report_path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+            }
+        }
+    }
+    proxy.stop().await.unwrap();
+    assert!(
+        report["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|result| result["passed"] == true),
+        "See the sanitized live report"
+    );
+}
+
 async fn live_socket(
     url: &str,
     auth: &HeaderMap,
