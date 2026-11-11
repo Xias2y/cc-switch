@@ -22,6 +22,18 @@ CCS 使用该供应商的端点和 API Key 读取 `/backend-api/codex/models`，
 请求；要求完成响应中的 `service_tier` 与请求一致。脱敏结果写入 `CCS_WS_LIVE_REPORT`。
 测试不需要官方账号，不读写正在使用的 CCS 数据或 Codex 配置。它会消耗少量 Krill 额度。
 
+### 2026-11-11 实测限制
+
+本次测试的 Krill Key 在 Astra、Sol、Terra 上通过了 HTTP Fast 验收（完成响应返回
+`priority`）。Astra/Sol 的 HTTP Ultrafast 请求完成后返回 `default`，未通过实际档位验收；
+WS 在发送生成请求前回退，直接握手返回 `426`。绕过 CCS 比较原生接口、三条公开线路及
+`-ultrafast` 模型名，仍未获得 `ultrafast` 完成响应。因此该修复恢复的是上游声明的目录
+能力，不能声称这把 Key 的 Ultrafast 已实际生效，不能据此发布“全部实测通过”的版本。
+完整脱敏记录见 [验收报告](validation/krill-speed-tiers-2026-11-11.json)。
+验收依据为 [Responses API 的 service_tier 定义](https://developers.openai.com/api/reference/resources/responses/methods/create)：
+响应返回实际使用的处理档位，可能与请求值不同。请求格式对照
+[Ultrafast 官方说明](https://developers.openai.com/api/docs/guides/ultrafast-mode)。
+
 ## English
 
 0.1.4 restores Krill's declared speed tiers in routing and aggregation mode. CCS reads the
@@ -43,3 +55,13 @@ The ignored `live_krill_speed_tiers_acceptance` test requires explicit authoriza
 verifies the generated aggregation catalog, and requires completed upstream responses to report
 the requested service tier. No official account or active installation is used. Live requests
 consume a small amount of Krill quota; the report excludes credentials and response bodies.
+
+### Live limitation on 2026-11-11
+
+The tested Krill key passed HTTP Fast for Astra, Sol and Terra with `priority` in completed
+responses. Astra/Sol Ultrafast completed with `default`, failing the requested-tier assertion.
+WebSocket fell back before generation; direct upstream handshakes returned 426. Direct native
+endpoint, public-line and suffix-name controls did not produce a completed `ultrafast` response
+either. The catalog fix is implemented, but full live acceptance has **not** passed. See the
+[sanitized report](validation/krill-speed-tiers-2026-11-11.json); do not describe this build as
+having verified operational Ultrafast for the tested credentials.
